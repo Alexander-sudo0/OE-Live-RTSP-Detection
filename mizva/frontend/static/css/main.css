@@ -1,0 +1,49 @@
+:root{--bg:#0b0f14;--card:#0f1720;--muted:#99a1ad;--accent:#4caf50;--accent-2:#2dd4bf;--glass:rgba(255,255,255,0.04)}*{box-sizing:border-box}body{margin:0;font-family:Inter,ui-sans-serif,system-ui,Arial,sans-serif;background:linear-gradient(180deg,#071019 0%, #0b0f14 100%);color:#e6eef6}header.topbar{height:120px;display:flex;align-items:flex-start;justify-content:space-between;padding:12px 24px;background:linear-gradient(90deg,rgba(255,255,255,0.02),transparent)}.brand{display:flex;align-items:center;gap:12px}.logo{height:48px;transform:scale(2.4);transform-origin:left center;margin-top:6px}.brand-text .title{font-weight:700;font-size:18px}.brand-text .subtitle{font-size:12px;color:var(--muted)}.top-actions .btn{margin-left:8px}.container{display:grid;grid-template-columns:320px 1fr 320px;gap:18px;padding:20px}.card{background:var(--card);border-radius:12px;padding:16px;box-shadow:0 6px 24px rgba(2,6,23,0.6)}.left-panel .field{margin-bottom:12px}.left-panel label{display:block;color:var(--muted);font-size:13px;margin-bottom:6px}.btn{background:transparent;border:1px solid rgba(255,255,255,0.06);color:var(--muted);padding:8px 12px;border-radius:8px;cursor:pointer}.btn.primary{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:#071019;border:none}.btn.secondary{background:transparent;border:1px solid rgba(255,255,255,0.06)}.btn.large{padding:12px 16px;font-size:15px}.row{display:flex;gap:8px;margin-top:8px}.thumb-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:8px}.thumb-row img{width:72px;height:72px;object-fit:cover;border-radius:8px;border:2px solid transparent;cursor:pointer;transition:all .12s}.thumb-row img.selected{outline:3px solid var(--accent);transform:scale(1.02)}.divider{height:1px;background:rgba(255,255,255,0.02);margin:12px 0}.center-panel{display:flex;flex-direction:column;gap:12px}.preview-area{display:flex;gap:12px}.preview-column{flex:1}.preview-title{color:var(--muted);font-size:13px;margin-bottom:8px}.preview-frame{width:100%;height:360px;background:var(--glass);border-radius:10px;display:flex;align-items:center;justify-content:center;position:relative;overflow:hidden}.preview-frame img{max-width:100%;max-height:100%;object-fit:contain}.overlay{position:absolute;left:0;top:0;pointer-events:none}.overlay > div{pointer-events:auto}.result-strip{display:flex;align-items:center;justify-content:space-between;padding:12px;gap:16px}.result-value{font-size:28px;font-weight:700;color:var(--accent)}.result-right img{max-width:120px;border-radius:6px;margin-top:6px}.right-panel{display:flex;flex-direction:column;gap:12px}.matches-list{display:flex;flex-direction:column;gap:8px}.match-item{display:flex;gap:8px;align-items:center;background:rgba(255,255,255,0.02);padding:8px;border-radius:8px}.match-item img{width:64px;height:64px;object-fit:cover;border-radius:6px}.log{height:140px;overflow:auto;background:transparent;border-radius:6px;padding:8px;color:var(--muted);border:1px dashed rgba(255,255,255,0.03)}footer.footer{padding:10px 20px;text-align:center;color:var(--muted);font-size:13px}
+.loading{opacity:0.7;filter:grayscale(0.6);}
+.overlay div{transition:transform .14s ease, box-shadow .14s ease, outline .12s ease, background-color .12s ease; border-radius:10px}
+.overlay div:hover{transform:translateY(-6px) scale(1.02); box-shadow:0 10px 30px rgba(0,0,0,0.45)}
+/* use backdrop-filter to subtly blur the face area under the selection (supported browsers) */
+.overlay div{background:rgba(12,12,14,0.55);-webkit-backdrop-filter:blur(4px);backdrop-filter:blur(4px)}
+.overlay div.selected{outline:3px solid var(--accent); box-shadow:0 18px 40px rgba(14,165,128,0.16); transform:translateY(-4px) scale(1.02); background:rgba(12,12,14,0.28)}
+.overlay div[style]{outline-offset:2px;}
+
+/* make thumbnails pop when selected */
+.thumb-row img.selected{outline:3px solid var(--accent); transform:scale(1.06); box-shadow:0 12px 28px rgba(4,120,87,0.12)}
+
+.preview-frame .overlay{position:absolute;left:0;top:0;width:100%;height:100%}
+
+.progress{height:10px;background:rgba(255,255,255,0.04);border-radius:6px;overflow:hidden}
+.progress-bar{height:100%;background:linear-gradient(90deg,var(--accent),var(--accent-2));width:0%;transition:width 200ms linear}
+.progress-text{font-size:12px;color:var(--muted);margin-top:6px}
+
+/* --- overrides to fix header/logo overlap --- */
+/* Keep these scoped and minimal so other layout rules aren't affected */
+header.topbar{height:92px;align-items:center;padding:10px 22px}
+.brand{align-items:center}
+.logo{transform:scale(1.45);transform-origin:left center;margin-top:0;height:48px;max-width:180px}
+.brand-text{line-height:1;margin-left:6px}
+.brand-text .title{font-size:16px}
+.brand-text .subtitle{font-size:12px;color:var(--muted);margin-top:2px}
+
+/* ensure top actions stay aligned */
+.top-actions{display:flex;align-items:center}
+
+/* Tab button styling (left column tabs) */
+#tabVerify, #tabFind{padding:8px 12px;border-radius:8px;border:1px solid rgba(255,255,255,0.04);background:transparent;cursor:pointer}
+#tabVerify.primary, #tabFind.primary{background:linear-gradient(90deg,var(--accent),var(--accent-2));color:#071019;border:none;box-shadow:0 8px 24px rgba(2,6,23,0.6);transform:translateY(-1px)}
+#tabVerify:not(.primary):hover, #tabFind:not(.primary):hover{background:rgba(255,255,255,0.02)}
+
+/* make match thumbnails clearly clickable */
+.match-item img{cursor:pointer}
+
+/* lightbox modal */
+#lightbox{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;z-index:9999}
+#lightbox .lb-backdrop{position:absolute;inset:0;background:rgba(3,6,11,0.7)}
+#lightbox .lb-content{position:relative;z-index:10000;max-width:90%;max-height:90%;background:transparent;display:flex;flex-direction:column;align-items:flex-end;padding:12px}
+#lightbox .lb-content img{max-width:100%;max-height:80vh;border-radius:8px;box-shadow:0 12px 40px rgba(0,0,0,0.6)}
+#lbClose{margin-bottom:8px}
+
+/* subtle active tab underline */
+#tabVerify.primary, #tabFind.primary{box-shadow:none}
+#tabVerify.primary::after, #tabFind.primary::after{content:'';display:block;height:3px;background:linear-gradient(90deg,var(--accent),var(--accent-2));border-radius:3px;margin-top:8px}
+

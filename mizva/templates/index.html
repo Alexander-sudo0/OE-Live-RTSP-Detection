@@ -1,0 +1,197 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <title>Mobile FR Test UI</title>
+    <link rel="stylesheet" href="/static/style.css">
+  </head>
+  <body>
+    <h1>Face Comparison</h1>
+    <form id="cmp" action="/compare" method="post" enctype="multipart/form-data">
+  <label>Image A: <input type="file" id="file1" name="file1" accept="image/*" required></label>
+  <button type="button" id="detect_a">Detect faces in A</button><br>
+  <label>Image B: <input type="file" id="file2" name="file2" accept="image/*" required></label>
+  <button type="button" id="detect_b">Detect faces in B</button><br>
+      <button type="submit">Compare</button>
+    </form>
+    <div id="cmp-preview" style="display:flex;gap:20px;margin-top:10px;">
+      <div>
+        <div>Original A</div>
+        <div style="position:relative;display:inline-block">
+          <img id="orig_a" src="" style="max-width:240px;display:none;border:1px solid #ccc;" />
+          <div id="overlays_a" style="position:absolute;left:0;top:0;pointer-events:none"></div>
+        </div>
+        <div id="thumbs_a"></div>
+      </div>
+      <div>
+        <div>Annotated A</div>
+        <img id="annot_a" src="" style="max-width:240px;display:none;border:1px solid #ccc;" />
+      </div>
+      <div>
+        <div>Original B</div>
+        <div style="position:relative;display:inline-block">
+          <img id="orig_b" src="" style="max-width:240px;display:none;border:1px solid #ccc;" />
+          <div id="overlays_b" style="position:absolute;left:0;top:0;pointer-events:none"></div>
+        </div>
+        <div id="thumbs_b"></div>
+      </div>
+      <div>
+        <div>Annotated B</div>
+        <img id="annot_b" src="" style="max-width:240px;display:none;border:1px solid #ccc;" />
+      </div>
+    </div>
+    <div id="cmp-result"></div>
+
+    <h1>Find in Video</h1>
+    <form id="find" action="/find" method="post" enctype="multipart/form-data">
+      <label>Known face: <input type="file" id="known" name="known" required></label><br>
+      <label>Video (optional): <input type="file" id="video" name="video" accept="video/*"></label><br>
+      <button type="submit">Run</button>
+    </form>
+    <div id="find-preview" style="display:flex;gap:20px;margin-top:10px;align-items:flex-start;">
+      <div>
+        <div>Known</div>
+        <img id="known_preview" src="" style="max-width:240px;display:none;border:1px solid #ccc;" />
+      </div>
+      <div>
+        <div>Video</div>
+        <video id="video_preview" controls style="max-width:480px;display:none;border:1px solid #ccc;"></video>
+      </div>
+      <div>
+        <div>Matches</div>
+        <div id="matches" style="display:flex;flex-direction:column;gap:8px;"></div>
+      </div>
+    </div>
+
+    <script>
+    // preview files
+    document.getElementById('file1').onchange = e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (!f.type.startsWith('image/')) { alert('Please select an image file'); e.target.value=''; return; }
+      document.getElementById('orig_a').src = URL.createObjectURL(f);
+      document.getElementById('orig_a').style.display = 'block';
+      // clear previous overlays/thumbs
+      document.getElementById('overlays_a').innerHTML='';
+      document.getElementById('thumbs_a').innerHTML='';
+    }
+    document.getElementById('file2').onchange = e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (!f.type.startsWith('image/')) { alert('Please select an image file'); e.target.value=''; return; }
+      document.getElementById('orig_b').src = URL.createObjectURL(f);
+      document.getElementById('orig_b').style.display = 'block';
+      document.getElementById('overlays_b').innerHTML='';
+      document.getElementById('thumbs_b').innerHTML='';
+    }
+
+    // helper to call /detect for a side (a/b/known)
+    async function doDetect(side, fileInputId){
+      const inp = document.getElementById(fileInputId);
+      if (!inp.files || !inp.files[0]) { alert('choose a file first'); return; }
+      const fd = new FormData(); fd.append('file', inp.files[0]); fd.append('side', side);
+      const res = await fetch('/detect', {method:'POST', body:fd});
+      const j = await res.json();
+      if (j.error){ alert(j.error); return; }
+      const imgEl = document.getElementById(side==='a'?'orig_a': side==='b'?'orig_b':'known_preview');
+      const overlays = document.getElementById(side==='a'?'overlays_a':'overlays_b');
+      const thumbs = document.getElementById(side==='a'?'thumbs_a':'thumbs_b');
+      // draw grey overlays for each bbox and create clickable thumbs
+      overlays.innerHTML=''; thumbs.innerHTML='';
+      const img = imgEl;
+      // wait for image to load to get natural sizes
+      await new Promise(r=>{ if (img.complete) r(); else img.onload=r; });
+      const scaleX = img.width / img.naturalWidth;
+      const scaleY = img.height / img.naturalHeight;
+      j.faces.forEach(f=>{
+        const div = document.createElement('div');
+        const [x1,y1,x2,y2] = f.bbox;
+        div.style.position='absolute';
+        div.style.left=(x1*scaleX)+'px'; div.style.top=(y1*scaleY)+'px';
+        div.style.width=((x2-x1)*scaleX)+'px'; div.style.height=((y2-y1)*scaleY)+'px';
+        div.style.background='rgba(128,128,128,0.6)';
+        div.style.border='2px solid rgba(255,255,255,0.2)';
+        div.style.cursor='pointer';
+        div.dataset.index = f.index;
+        // clicking overlay selects this face
+        div.onclick = () => selectFace(side, f.index);
+        overlays.appendChild(div);
+
+        const t = document.createElement('img');
+        t.src = f.thumb; t.style.maxWidth='80px'; t.style.margin='4px'; t.style.cursor='pointer';
+        t.dataset.index = f.index;
+        t.onclick = () => selectFace(side, f.index);
+        thumbs.appendChild(t);
+      });
+    }
+
+    function selectFace(side, index){
+      // highlight selection in thumbs and mark hidden inputs
+      const thumbs = document.getElementById(side==='a'?'thumbs_a':'thumbs_b');
+      Array.from(thumbs.querySelectorAll('img')).forEach(im=>{
+        im.style.outline = (im.dataset.index==index)?'3px solid #4CAF50':'none';
+      });
+      // annotate which face index to use when submitting compare
+      const hiddenId = 'selected_'+side;
+      let hid = document.getElementById(hiddenId);
+      if (!hid){ hid = document.createElement('input'); hid.type='hidden'; hid.id=hiddenId; hid.name = 'selected_'+side; document.getElementById('cmp').appendChild(hid); }
+      hid.value = index;
+    }
+
+    document.getElementById('detect_a').onclick = ()=> doDetect('a','file1');
+    document.getElementById('detect_b').onclick = ()=> doDetect('b','file2');
+
+    // AJAX submit compare
+    document.getElementById('cmp').onsubmit = async function(ev){
+      ev.preventDefault();
+      const fd = new FormData(this);
+      const res = await fetch('/compare', {method:'POST', body:fd});
+      const j = await res.json();
+      if (j.error) {
+        document.getElementById('cmp-result').innerText = j.error;
+        return;
+      }
+      document.getElementById('annot_a').src = j.annot_a; document.getElementById('annot_a').style.display='block';
+      document.getElementById('annot_b').src = j.annot_b; document.getElementById('annot_b').style.display='block';
+      document.getElementById('cmp-result').innerText = 'Similarity: '+j.similarity.toFixed(4);
+    }
+
+    // find preview handlers
+    document.getElementById('known').onchange = e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      if (!f.type.startsWith('image/')) { alert('Please select an image file'); e.target.value=''; return; }
+      document.getElementById('known_preview').src = URL.createObjectURL(f);
+      document.getElementById('known_preview').style.display = 'block';
+    }
+    document.getElementById('video').onchange = e => {
+      const f = e.target.files[0];
+      if (!f) return;
+      const v = document.getElementById('video_preview');
+      v.src = URL.createObjectURL(f);
+      v.style.display = 'block';
+    }
+
+    document.getElementById('find').onsubmit = async function(ev){
+      ev.preventDefault();
+      const fd = new FormData(this);
+      const res = await fetch('/find',{method:'POST',body:fd});
+      const j = await res.json();
+      if (j.error){ document.getElementById('matches').innerText = j.error; return; }
+      document.getElementById('matches').innerHTML = '';
+      if (j.found && j.found.length){
+        j.found.forEach(m => {
+          const d = document.createElement('div');
+          const im = document.createElement('img');
+          im.src = m.img; im.style.maxWidth='200px'; im.style.border='1px solid #ccc';
+          const p = document.createElement('div'); p.innerText = `frame ${m.frame} sim ${m.sim.toFixed(3)}`;
+          d.appendChild(im); d.appendChild(p);
+          document.getElementById('matches').appendChild(d);
+        });
+      } else {
+        document.getElementById('matches').innerText = 'No matches found';
+      }
+    }
+    </script>
+  </body>
+</html>

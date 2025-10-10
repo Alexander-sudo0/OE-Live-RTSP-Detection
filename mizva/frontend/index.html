@@ -1,0 +1,171 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>OptiExacta FR — Demo</title>
+  <link rel="stylesheet" href="/frontend/static/css/main.css">
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <img src="/static/img/white_logo_320.png" alt="OptiExacta" class="logo"/>
+      <div class="brand-text">
+        <div class="title">OptiExacta FR</div>
+        <div class="subtitle">AI Labs — All rights reserved</div>
+      </div>
+    </div>
+    <nav class="top-actions">
+      <button id="helpBtn" class="btn ghost">Help</button>
+    </nav>
+  </header>
+
+  <main class="container">
+    <div style="width:320px">
+      <div style="display:flex;gap:8px;margin-bottom:10px">
+        <button id="tabVerify" class="btn">Verify</button>
+        <button id="tabFind" class="btn">Find in Video</button>
+      </div>
+      <section class="left-panel card" id="panelVerify">
+      <h2>Inputs</h2>
+      <div class="field">
+        <label>Image A</label>
+        <input id="fileA" type="file" accept="image/*" />
+        <div class="row">
+          <button id="detectA" class="btn">Detect Faces</button>
+          <button id="clearA" class="btn secondary">Clear</button>
+        </div>
+        <div id="thumbsA" class="thumb-row"></div>
+      </div>
+
+      <div class="divider"></div>
+
+      <div class="field">
+        <label>Image B</label>
+        <input id="fileB" type="file" accept="image/*" />
+        <div class="row">
+          <button id="detectB" class="btn">Detect Faces</button>
+          <button id="clearB" class="btn secondary">Clear</button>
+        </div>
+        <div id="thumbsB" class="thumb-row"></div>
+      </div>
+
+      <div class="divider"></div>
+  <!-- Known/Video controls moved to Find tab -->
+
+      <div style="margin-top:12px">
+          <div style="display:flex;gap:8px;align-items:center">
+          <button id="compareBtn" class="btn primary large">Compare Selected</button>
+          <div class="settings">
+            <label style="color:var(--muted);font-size:13px;margin-left:8px">Threshold</label>
+            <input id="thresholdVerify" type="range" min="0" max="1" step="0.01" value="0.45" />
+            <span id="thresholdValVerify" style="margin-left:6px;color:var(--muted)">0.45</span>
+          </div>
+        </div>
+      </div>
+
+      <div class="notes">
+        <strong>Note:</strong> Click a face thumbnail to select which face to use for the operation. Matches are scored with cosine similarity.
+      </div>
+      </section>
+
+      <section class="left-panel card" id="panelFind" style="display:none">
+        <h2>Find in Video</h2>
+        <div class="field">
+          <label>Known (for Find)</label>
+          <input id="fileKnown" type="file" accept="image/*" />
+          <div class="row">
+            <button id="detectKnown" class="btn">Detect</button>
+            <button id="clearKnown" class="btn secondary">Clear</button>
+          </div>
+          <div id="thumbsKnown" class="thumb-row"></div>
+          <div style="margin-top:8px">
+            <img id="imgKnown" src="" alt="Known preview" style="max-width:100%;display:none;border-radius:8px;border:1px solid rgba(255,255,255,0.04)" />
+          </div>
+        </div>
+
+        <div class="field">
+          <label>Video (for Find)</label>
+          <input id="fileVideo" type="file" accept="video/*" />
+          <div class="row">
+            <button id="runFind" class="btn">Search Video</button>
+          </div>
+          <div style="margin-top:8px">
+            <video id="videoPreview" controls style="max-width:100%;display:none;border-radius:8px;border:1px solid rgba(255,255,255,0.04)"></video>
+          </div>
+          <div id="videoProgressWrap" style="margin-top:8px;display:none">
+            <div style="font-size:13px;color:var(--muted);margin-bottom:6px">Processing video...</div>
+            <div class="progress"><div id="videoProgressBar" class="progress-bar" style="width:0%"></div></div>
+          </div>
+        </div>
+
+        <div style="margin-top:12px">
+          <div style="display:flex;gap:8px;align-items:center">
+            <div class="settings">
+              <label style="color:var(--muted);font-size:13px;margin-left:8px">Threshold</label>
+              <input id="thresholdFind" type="range" min="0" max="1" step="0.01" value="0.45" />
+              <span id="thresholdValFind" style="margin-left:6px;color:var(--muted)">0.45</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+
+    <section class="center-panel card">
+      <div class="preview-area">
+        <div class="preview-column">
+          <div class="preview-title">A — Original</div>
+          <div class="preview-frame" id="frameA">
+            <img id="imgA" src="" alt="Image A"/>
+            <div class="overlay" id="overA"></div>
+          </div>
+        </div>
+
+        <div class="preview-column">
+          <div class="preview-title">B — Original</div>
+          <div class="preview-frame" id="frameB">
+            <img id="imgB" src="" alt="Image B"/>
+            <div class="overlay" id="overB"></div>
+          </div>
+        </div>
+      </div>
+
+      <div class="result-strip card">
+        <div class="result-left">
+          <div class="result-label">Similarity</div>
+          <div id="similarity" class="result-value">—</div>
+          <div id="matchBadge" style="margin-top:6px;color:var(--muted)"></div>
+        </div>
+        <div class="result-right">
+          <div>Annotated A</div>
+          <img id="annotA" src=""/>
+          <div>Annotated B</div>
+          <img id="annotB" src=""/>
+        </div>
+      </div>
+    </section>
+
+    <aside class="right-panel card">
+      <h3>Matches</h3>
+      <div id="matchesList" class="matches-list">No results yet.</div>
+
+      <h3 style="margin-top:12px">Activity Log</h3>
+      <pre id="log" class="log">Ready.</pre>
+    </aside>
+  </main>
+
+  <footer class="footer">
+    <div>OptiExacta AI Labs © All rights reserved</div>
+  </footer>
+
+  <script src="/frontend/static/js/app.js"></script>
+  <!-- Lightbox modal for match preview -->
+  <div id="lightbox" style="display:none">
+    <div class="lb-backdrop" id="lbBackdrop"></div>
+    <div class="lb-content" id="lbContent">
+      <button id="lbClose" class="btn">Close</button>
+      <img id="lbImage" src="" alt="preview" />
+    </div>
+  </div>
+</body>
+</html>

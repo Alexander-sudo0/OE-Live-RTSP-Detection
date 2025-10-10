@@ -1,0 +1,10 @@
+body{font-family:Arial,helvetica,sans-serif;margin:20px}
+h1{color:#333}
+form{background:#fafafa;padding:12px;border-radius:6px;border:1px solid #eee;margin-bottom:12px}
+#matches img{display:block;margin-bottom:6px}
+
+/* face overlay and thumbnail selection */
+#overlays_a div, #overlays_b div{box-sizing:border-box}
+#thumbs_a img, #thumbs_b img{transition:transform 0.12s ease}
+#thumbs_a img:hover, #thumbs_b img:hover{transform:scale(1.05)}
+
