@@ -24,8 +24,10 @@ import {
   MIZVA_URL,
   listCameras,
   cleanupCameras,
+  deleteCamera,
 } from "@/backend_integration/api_mizva";
 import { Play, Pause, Trash2 as Delete } from "lucide-react";
+import { useAlerts } from "@/contexts/AlertContext";
 
 type Cam = { id: string; url: string; name: string };
 
@@ -55,6 +57,7 @@ function CameraCard({
   const [snapshotKey, setSnapshotKey] = useState(0);
   const [actionLoading, setActionLoading] = useState(false);
   const [initialized, setInitialized] = useState(false);
+  const { addAlert } = useAlerts();
 
   useEffect(() => {
     let es: EventSource | null = null;
@@ -78,6 +81,17 @@ function CameraCard({
             es = connectRtspEvents(cam.id, (e) => {
               if (mounted) {
                 setEvents((prev) => [e, ...prev].slice(0, 10));
+
+                // Add alert for each event
+                addAlert({
+                  person_name: e.person_name || "Unknown Person",
+                  confidence: Math.round((e.confidence || 0) * 100),
+                  camera_id: cam.id,
+                  camera_name: cam.name || `Camera ${cam.id.slice(-6)}`,
+                  timestamp: new Date().toISOString(),
+                  thumb_relpath: e.thumb_relpath || "",
+                  is_match: e.is_match || false,
+                });
               }
             });
           }
@@ -109,6 +123,17 @@ function CameraCard({
           es = connectRtspEvents(cam.id, (e) => {
             if (mounted) {
               setEvents((prev) => [e, ...prev].slice(0, 10));
+
+              // Add alert for each event
+              addAlert({
+                person_name: e.person_name || "Unknown Person",
+                confidence: Math.round((e.confidence || 0) * 100),
+                camera_id: cam.id,
+                camera_name: cam.name || `Camera ${cam.id.slice(-6)}`,
+                timestamp: new Date().toISOString(),
+                thumb_relpath: e.thumb_relpath || "",
+                is_match: e.is_match || false,
+              });
             }
           });
         } else if (!isRunning && es) {
@@ -194,11 +219,16 @@ function CameraCard({
     }
     setActionLoading(true);
     try {
-      await rtspStop(cam.id);
+      // Use the proper delete API endpoint
+      await deleteCamera(cam.id);
       onRemove(cam.id);
+      onUpdate();
     } catch (e) {
       console.error("Failed to delete camera:", e);
-      alert("Failed to delete camera");
+      alert(
+        "Failed to delete camera: " +
+          (e instanceof Error ? e.message : "Unknown error")
+      );
     } finally {
       setActionLoading(false);
     }
@@ -233,8 +263,16 @@ function CameraCard({
             <img
               src={`${snapshotUrl(cam.id)}?t=${snapshotKey}`}
               alt={"Live snapshot"}
-              className="h-full w-full object-cover"
+              className="h-full w-full object-cover transition-opacity duration-300"
               loading="lazy"
+              style={{
+                imageRendering: "crisp-edges",
+                filter: "contrast(1.1) saturate(1.05)",
+              }}
+              onLoad={(e) => {
+                const target = e.target as HTMLImageElement;
+                target.style.opacity = "1";
+              }}
               onError={(e) => {
                 const target = e.target as HTMLImageElement;
                 target.style.display = "none";
@@ -303,12 +341,24 @@ function CameraCard({
         {events.length > 0 && (
           <div className="grid grid-cols-3 gap-2">
             {events.map((e, i) => (
-              <img
-                key={i}
-                src={`${MIZVA_URL}/data/${e.thumb_relpath}`}
-                className="h-20 w-full object-cover rounded-md border"
-                alt={`Detection ${i + 1}`}
-              />
+              <div key={i} className="relative group">
+                <img
+                  src={`${MIZVA_URL}/data/${e.thumb_relpath}`}
+                  className="h-24 w-full object-cover rounded-md border shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer"
+                  alt={`Detection ${i + 1}`}
+                  loading="lazy"
+                  style={{ imageRendering: "crisp-edges" }}
+                  onClick={() =>
+                    window.open(
+                      `${MIZVA_URL}/data/${e.thumb_relpath}`,
+                      "_blank"
+                    )
+                  }
+                />
+                {e.is_match && (
+                  <div className="absolute top-1 right-1 h-3 w-3 bg-red-500 rounded-full border border-white shadow-sm"></div>
+                )}
+              </div>
             ))}
           </div>
         )}

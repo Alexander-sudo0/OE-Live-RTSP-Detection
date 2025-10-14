@@ -122,4 +122,20 @@
   body {
     @apply bg-background text-foreground;
   }
+  
+  /* Enhanced image rendering for better quality */
+  img {
+    image-rendering: -webkit-optimize-contrast;
+    image-rendering: crisp-edges;
+  }
+  
+  /* Smooth transitions for image loading */
+  img[src] {
+    opacity: 0;
+    transition: opacity 0.3s ease-in-out;
+  }
+  
+  img[src]:not([src=""]) {
+    opacity: 1;
+  }
 }

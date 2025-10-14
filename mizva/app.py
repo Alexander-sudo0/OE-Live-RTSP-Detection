@@ -17,9 +17,18 @@ ROOT = Path(__file__).resolve().parent.parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
-# Local imports (require ROOT on sys.path)
-from mizva.storage import LocalStore
-from mizva import db as dbm
+# Local imports - try relative import first
+try:
+    from mizva.storage import LocalStore
+except ImportError:
+    # Fallback to direct import if relative import fails
+    from storage import LocalStore
+
+try:
+    from mizva import db as dbm
+except ImportError:
+    # Fallback to direct import
+    import db as dbm
 try:
     # Prefer direct import; falls back to shim if needed
     from insightface.app import FaceAnalysis  # type: ignore
@@ -80,15 +89,32 @@ def _save_thumb(frame: np.ndarray, bbox, name_prefix: str) -> str:
     x2 = max(0, min(int(x2), w - 1))
     y1 = max(0, min(int(y1), h - 1))
     y2 = max(0, min(int(y2), h - 1))
+    
+    # Expand the bounding box slightly for better context
+    padding = 20
+    x1 = max(0, x1 - padding)
+    y1 = max(0, y1 - padding) 
+    x2 = min(w, x2 + padding)
+    y2 = min(h, y2 + padding)
+    
     crop = frame[y1:y2, x1:x2]
+    
+    # Resize crop to a standard size for consistency and better quality
+    if crop.shape[0] > 0 and crop.shape[1] > 0:
+        crop = cv2.resize(crop, (200, 200), interpolation=cv2.INTER_LANCZOS4)
+    
     # Make filename unique with UUID to avoid overwriting
     fname = f"{name_prefix}_{uuid.uuid4().hex[:8]}.jpg"
     outp = IMAGES_DIR / fname
+    
     try:
-        cv2.imwrite(str(outp), crop)
+        # Save with high quality (95% quality, reduce compression artifacts)
+        cv2.imwrite(str(outp), crop, [cv2.IMWRITE_JPEG_QUALITY, 95])
     except Exception:
         # Fallback to saving the whole frame if crop fails
-        cv2.imwrite(str(outp), frame)
+        resized_frame = cv2.resize(frame, (200, 200), interpolation=cv2.INTER_LANCZOS4)
+        cv2.imwrite(str(outp), resized_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
+    
     return str(outp.relative_to(DATA_DIR)).replace('\\', '/')
 
 @app.route('/')
@@ -967,6 +993,24 @@ def api_cameras_cleanup():
                 removed.append(cam_id)
         
         return jsonify({'removed': removed, 'count': len(removed)})
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
+@app.route('/api/cameras/<cam_id>', methods=['DELETE'])
+def api_camera_delete(cam_id):
+    """Delete a specific camera"""
+    try:
+        # Stop the camera if it's running
+        if cam_id in RTSP_WORKERS:
+            worker = RTSP_WORKERS[cam_id]
+            worker.stop()
+            del RTSP_WORKERS[cam_id]
+        
+        # Remove from database
+        dbm.remove_camera(DB_CONN, cam_id)
+        
+        return jsonify({'id': cam_id, 'status': 'deleted'})
     except Exception as e:
         return jsonify({'error': str(e)}), 500
 

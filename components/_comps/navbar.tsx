@@ -30,6 +30,7 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { BellNotification } from "./bell-notification";
 
 export function Navbar() {
   const pathname = usePathname();
@@ -127,6 +128,9 @@ export function Navbar() {
 
         {/* Profile Dropdown */}
         <div className="flex items-center gap-4">
+          {/* Bell Notification */}
+          <BellNotification />
+
           <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <Button

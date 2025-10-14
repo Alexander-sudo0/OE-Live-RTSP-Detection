@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+  <head>
+    <title>Alert Sound Generator</title>
+  </head>
+  <body>
+    <h1>Generate Alert Sound</h1>
+    <button onclick="generateSound()">Generate alert-ring.mp3</button>
+
+    <script>
+      function generateSound() {
+        // This is a simple way to create a beep sound file
+        // In a real scenario, you would use a proper audio file
+        const audioContext = new (window.AudioContext ||
+          window.webkitAudioContext)();
+        const duration = 2; // 2 seconds
+        const frequency = 800; // 800 Hz
+
+        const oscillator = audioContext.createOscillator();
+        const gainNode = audioContext.createGain();
+
+        oscillator.connect(gainNode);
+        gainNode.connect(audioContext.destination);
+
+        oscillator.frequency.value = frequency;
+        oscillator.type = "sine";
+
+        // Create envelope
+        const now = audioContext.currentTime;
+        gainNode.gain.setValueAtTime(0, now);
+        gainNode.gain.linearRampToValueAtTime(0.3, now + 0.1);
+        gainNode.gain.exponentialRampToValueAtTime(0.01, now + duration);
+
+        oscillator.start(now);
+        oscillator.stop(now + duration);
+
+        alert(
+          "Playing test sound! You can replace /public/sounds/alert-ring.mp3 with a real audio file."
+        );
+      }
+    </script>
+  </body>
+</html>

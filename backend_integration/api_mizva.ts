@@ -110,3 +110,9 @@ export async function cleanupCameras(baseUrl = MIZVA_URL) {
   if (!res.ok) throw new Error(await res.text())
   return res.json()
 }
+
+export async function deleteCamera(id: string, baseUrl = MIZVA_URL) {
+  const res = await fetch(`${baseUrl}/api/cameras/${id}`, { method: "DELETE" })
+  if (!res.ok) throw new Error(await res.text())
+  return res.json()
+}
