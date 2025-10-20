@@ -8,6 +8,7 @@ import {
   Bell,
   ListChecks,
   MonitorPlay,
+  VideoIcon,
 } from "lucide-react";
 
 export type Section = {
@@ -25,6 +26,14 @@ export const SECTION_CARDS: Section[] = [
     description: "Live RTSP streams checked against watchlist frames.",
     href: "/live-monitoring",
     Icon: MonitorPlay,
+  },
+  {
+    key: "video-analysis",
+    title: "Video Analysis",
+    description:
+      "Upload offline videos for comprehensive face detection and watchlist matching analysis.",
+    href: "/video-analysis",
+    Icon: VideoIcon,
   },
   {
     key: "events",
