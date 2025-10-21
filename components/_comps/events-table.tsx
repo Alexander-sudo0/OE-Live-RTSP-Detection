@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import React, { useState, useEffect } from "react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -48,6 +48,17 @@ export function EventsTable(props: Props) {
     "all" | "matched" | "unmatched"
   >("all");
   const { alerts } = useAlerts();
+
+  // Safe date formatting component to avoid hydration issues
+  const SafeDateFormat = ({ timestamp }: { timestamp: number }) => {
+    const [formattedDate, setFormattedDate] = useState<string>("...");
+
+    useEffect(() => {
+      setFormattedDate(new Date(timestamp).toLocaleString());
+    }, [timestamp]);
+
+    return <span>{formattedDate}</span>;
+  };
 
   useEffect(() => {
     // default from props or URL param
@@ -335,7 +346,7 @@ export function EventsTable(props: Props) {
                           <div className="flex items-center gap-4 text-xs text-muted-foreground">
                             <span className="flex items-center gap-1">
                               <Clock className="h-3 w-3" />
-                              {new Date(r.ts).toLocaleString()}
+                              <SafeDateFormat timestamp={r.ts} />
                             </span>
                             <span className="flex items-center gap-1">
                               <Camera className="h-3 w-3" />

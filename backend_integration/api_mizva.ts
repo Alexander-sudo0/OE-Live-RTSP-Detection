@@ -99,6 +99,10 @@ export function snapshotUrl(id: string, baseUrl = MIZVA_URL) {
   return `${baseUrl}/api/rtsp/snapshot/${id}`
 }
 
+export function streamUrl(id: string, baseUrl = MIZVA_URL) {
+  return `${baseUrl}/api/rtsp/stream/${id}`
+}
+
 export async function listCameras(baseUrl = MIZVA_URL) {
   const res = await fetch(`${baseUrl}/api/cameras`)
   if (!res.ok) throw new Error(await res.text())

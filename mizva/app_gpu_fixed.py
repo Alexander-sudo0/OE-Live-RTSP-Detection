@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify, send_from_directory, url_for
 from flask_cors import CORS
+from werkzeug.utils import secure_filename
 import os
 import sys
 from pathlib import Path
@@ -29,6 +30,56 @@ try:
 except ImportError:
     # Fallback to direct import
     import db as dbm
+
+# Global quality threshold (default 0.4)
+QUALITY_THRESHOLD = 0.4
+
+def calculate_image_quality(image):
+    """
+    Calculate image quality using variance of Laplacian (blur detection) on face crop.
+    Returns a score between 0 and 1, where higher values indicate better quality.
+    """
+    if image is None or image.size == 0:
+        print("Warning: Empty or None image provided to quality calculation")
+        return 0.0
+    
+    try:
+        # Convert to grayscale if needed
+        if len(image.shape) == 3:
+            gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
+        else:
+            gray = image.copy()
+        
+        # Resize if too small for reliable analysis (min 32x32 pixels)
+        if gray.shape[0] < 32 or gray.shape[1] < 32:
+            gray = cv2.resize(gray, (64, 64))
+        
+        # Calculate variance of Laplacian
+        laplacian = cv2.Laplacian(gray, cv2.CV_64F)
+        laplacian_var = laplacian.var()
+        
+        print(f"Quality calculation - Laplacian variance: {laplacian_var:.2f}")
+        
+        # Improved normalization based on face crop analysis
+        # Face crops typically have lower variance than full images
+        # Sharp faces: 50-200, Blurry faces: 5-30, Very blurry: <10
+        if laplacian_var > 100:
+            normalized_score = 0.9 + (min(laplacian_var - 100, 200) / 200) * 0.1  # 0.9-1.0 for very sharp
+        elif laplacian_var > 30:
+            normalized_score = 0.5 + ((laplacian_var - 30) / 70) * 0.4  # 0.5-0.9 for good quality
+        elif laplacian_var > 10:
+            normalized_score = 0.2 + ((laplacian_var - 10) / 20) * 0.3  # 0.2-0.5 for medium quality
+        else:
+            normalized_score = laplacian_var / 10 * 0.2  # 0.0-0.2 for poor quality
+        
+        quality_score = max(0.0, min(1.0, normalized_score))
+        print(f"Final quality score: {quality_score:.3f} (var: {laplacian_var:.1f})")
+        
+        return quality_score
+        
+    except Exception as e:
+        print(f"Error calculating image quality: {e}")
+        return 0.5  # Default to medium quality on error
 try:
     # Prefer direct import; falls back to shim if needed
     from insightface.app import FaceAnalysis  # type: ignore
@@ -124,6 +175,33 @@ def _save_thumb(frame: np.ndarray, bbox, name_prefix: str) -> str:
         cv2.imwrite(str(outp), resized_frame, [cv2.IMWRITE_JPEG_QUALITY, 95])
     
     return str(outp.relative_to(DATA_DIR)).replace('\\', '/')
+
+
+def _save_frame(frame: np.ndarray, name_prefix: str) -> str:
+    """Save full frame thumbnail for matched detections."""
+    # Resize frame to manageable size while maintaining aspect ratio
+    h, w = frame.shape[:2]
+    max_size = 400
+    if max(h, w) > max_size:
+        if h > w:
+            new_h, new_w = max_size, int(w * max_size / h)
+        else:
+            new_h, new_w = int(h * max_size / w), max_size
+        frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LANCZOS4)
+    
+    # Make filename unique
+    fname = f"{name_prefix}_{uuid.uuid4().hex[:8]}.jpg"
+    outp = IMAGES_DIR / fname
+    
+    try:
+        # Save with high quality
+        cv2.imwrite(str(outp), frame, [cv2.IMWRITE_JPEG_QUALITY, 90])
+    except Exception as e:
+        print(f"Failed to save frame: {e}")
+        return ""
+    
+    return str(outp.relative_to(DATA_DIR)).replace('\\', '/')
+
 
 @app.route('/')
 def index():
@@ -680,6 +758,24 @@ class RtspWorker:
                         # Always store events (matched and unmatched)
                         bbox = f.bbox.astype(int).tolist()
                         rel = _save_thumb(frame, bbox, f"rtsp_{self.cam_id}_{self.frame_idx}")
+                        
+                        # Calculate image quality for the face crop
+                        x1, y1, x2, y2 = bbox
+                        face_crop = frame[y1:y2, x1:x2]
+                        quality_score = calculate_image_quality(face_crop)
+                        is_low_quality = quality_score < QUALITY_THRESHOLD
+                        
+                        # Save full frame image
+                        full_image_path = None
+                        try:
+                            timestamp = int(self.last_seen * 1000)
+                            full_image_filename = f"full_{self.cam_id}_{timestamp}_{self.frame_idx}.jpg"
+                            full_image_path = os.path.join(UPLOAD_DIR, full_image_filename)
+                            cv2.imwrite(full_image_path, frame)
+                        except Exception as e:
+                            print(f"Failed to save full image: {e}")
+                            full_image_path = None
+                        
                         # Insert event into DB with cooldown (1s)
                         now_ms = int(self.last_seen * 1000)
                         if (self.last_seen - self._last_emit_ts) >= 1.0:
@@ -693,10 +789,14 @@ class RtspWorker:
                                     'matched': matched,
                                     'person_id': person_id,
                                     'person_name': person_name,
-                                    'extra': {'mode': self.mode}
+                                    'extra': {'mode': self.mode, 'quality_score': quality_score},
+                                    'quality_score': quality_score,
+                                    'is_low_quality': is_low_quality,
+                                    'full_image_path': full_image_path
                                 })
                                 self._last_emit_ts = self.last_seen
-                            except Exception as _:
+                            except Exception as e:
+                                print(f"Failed to insert event: {e}")
                                 pass
                         # For live UI, publish only matched events, but include matched flag
                         if matched:
@@ -1129,6 +1229,172 @@ def api_events():
     return jsonify({'events': rows})
 
 
+@app.route('/api/events/high-quality', methods=['GET'])
+def api_events_high_quality():
+    """Get events with quality score above threshold"""
+    try:
+        limit = int(request.args.get('limit', '100'))
+    except Exception:
+        limit = 100
+    
+    quality_threshold = float(request.args.get('threshold', QUALITY_THRESHOLD))
+    matched_q = request.args.get('matched')
+    matched = None
+    if matched_q is not None:
+        matched = True if matched_q in ('1', 'true', 'True') else False
+    camera_id = request.args.get('camera_id')
+    
+    # Get all events and filter by quality
+    rows = dbm.list_events(DB_CONN, limit=limit*2, matched=matched)  # Get more to account for filtering
+    
+    # Filter by quality score
+    filtered_rows = []
+    for r in rows:
+        quality_score = r.get('quality_score', 1.0)  # Default to high quality for existing records
+        if quality_score >= quality_threshold:
+            filtered_rows.append(r)
+        if len(filtered_rows) >= limit:
+            break
+    
+    if camera_id:
+        filtered_rows = [r for r in filtered_rows if r.get('camera_id') == camera_id]
+    
+    # Add absolute URL for thumbnails
+    for r in filtered_rows:
+        rel = r.get('thumb_relpath')
+        if rel:
+            r['thumb_url'] = f"/data/{rel}"
+    
+    return jsonify({'events': filtered_rows})
+
+
+@app.route('/api/events/low-quality', methods=['GET'])
+def api_events_low_quality():
+    """Get events with quality score below threshold"""
+    try:
+        limit = int(request.args.get('limit', '100'))
+    except Exception:
+        limit = 100
+    
+    quality_threshold = float(request.args.get('threshold', QUALITY_THRESHOLD))
+    matched_q = request.args.get('matched')
+    matched = None
+    if matched_q is not None:
+        matched = True if matched_q in ('1', 'true', 'True') else False
+    camera_id = request.args.get('camera_id')
+    
+    # Get all events and filter by quality
+    rows = dbm.list_events(DB_CONN, limit=limit*2, matched=matched)  # Get more to account for filtering
+    
+    # Filter by quality score
+    filtered_rows = []
+    for r in rows:
+        quality_score = r.get('quality_score', 1.0)  # Default to high quality for existing records
+        if quality_score < quality_threshold:
+            filtered_rows.append(r)
+        if len(filtered_rows) >= limit:
+            break
+    
+    if camera_id:
+        filtered_rows = [r for r in filtered_rows if r.get('camera_id') == camera_id]
+    
+    # Add absolute URL for thumbnails
+    for r in filtered_rows:
+        rel = r.get('thumb_relpath')
+        if rel:
+            r['thumb_url'] = f"/data/{rel}"
+    
+    return jsonify({'events': filtered_rows})
+
+
+@app.route('/api/quality-threshold', methods=['GET', 'POST'])
+def api_quality_threshold():
+    """Get or set the quality threshold"""
+    global QUALITY_THRESHOLD
+    
+    if request.method == 'GET':
+        return jsonify({'threshold': QUALITY_THRESHOLD})
+    
+    try:
+        data = request.get_json()
+        threshold = float(data.get('threshold', QUALITY_THRESHOLD))
+        if 0.0 <= threshold <= 1.0:
+            QUALITY_THRESHOLD = threshold
+            return jsonify({'threshold': QUALITY_THRESHOLD, 'success': True})
+        else:
+            return jsonify({'error': 'Threshold must be between 0.0 and 1.0'}), 400
+    except Exception as e:
+        return jsonify({'error': str(e)}), 400
+
+
+@app.route('/api/events/<int:event_id>/full-image', methods=['GET'])
+def api_event_full_image(event_id):
+    """Get the full image for an event with bounding box drawn"""
+    try:
+        # Get event details from database
+        with dbm.DB_LOCK:
+            event = DB_CONN.execute("SELECT * FROM events WHERE id=?", (event_id,)).fetchone()
+        
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        event_dict = dict(event)
+        full_image_path = event_dict.get('full_image_path')
+        
+        if not full_image_path or not os.path.exists(full_image_path):
+            return jsonify({'error': 'Full image not found'}), 404
+        
+        # Load image and draw bounding box
+        image = cv2.imread(full_image_path)
+        if image is None:
+            return jsonify({'error': 'Could not load image'}), 500
+        
+        # Parse bounding box
+        try:
+            bbox_str = event_dict.get('bbox', '[]')
+            bbox = json.loads(bbox_str)
+            if len(bbox) >= 4:
+                x1, y1, x2, y2 = map(int, bbox[:4])
+                
+                # Draw bounding box
+                color = (0, 255, 0) if event_dict.get('matched') else (0, 165, 255)  # Green for matches, Orange for unknown
+                thickness = 3
+                cv2.rectangle(image, (x1, y1), (x2, y2), color, thickness)
+                
+                # Add label
+                label = event_dict.get('person_name', 'Unknown')
+                confidence = event_dict.get('confidence', 0)
+                quality_score = event_dict.get('quality_score', 0)
+                
+                label_text = f"{label} ({confidence:.1%})"
+                if quality_score > 0:
+                    label_text += f" Q:{quality_score:.2f}"
+                
+                # Calculate label size and position
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.7
+                label_size = cv2.getTextSize(label_text, font, font_scale, 2)[0]
+                
+                # Draw label background
+                cv2.rectangle(image, (x1, y1 - label_size[1] - 10), 
+                             (x1 + label_size[0], y1), color, -1)
+                
+                # Draw label text
+                cv2.putText(image, label_text, (x1, y1 - 5), 
+                           font, font_scale, (255, 255, 255), 2)
+        except Exception as e:
+            print(f"Error drawing bounding box: {e}")
+        
+        # Encode image as JPEG
+        _, buffer = cv2.imencode('.jpg', image)
+        
+        from flask import Response
+        return Response(buffer.tobytes(), mimetype='image/jpeg')
+        
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 # Start enabled cameras (watchlist mode) on boot
 def _boot_start_cameras():
     try:
@@ -1162,12 +1428,18 @@ def _boot_start_cameras():
 
 _boot_start_cameras()
 
-# Job status endpoint (file-backed)
+# Job status endpoint (file-backed and in-memory)
 @app.route("/api/jobs/<job_id>", methods=["GET"])
 def api_job_status(job_id):
+    # Check in-memory jobs first (for video analysis)
+    job = JOBS.get(job_id)
+    if job:
+        return jsonify(job)
+    
+    # Fall back to file-backed jobs
     data = store.get_job(job_id)
     if not data:
-        return jsonify({"error": "not found"}), 404
+        return jsonify({"error": "Job not found"}), 404
     return jsonify(data)
 
 # Simple uploads listing (file-backed)
@@ -1338,21 +1610,43 @@ def api_video_analysis_start():
     video_rec = store.save_upload(video_file, 'video')
     video_path = Path(video_rec['path'])
     
-    job_id = store.new_job("video_analysis", {
-        "video": video_rec,
-        "threshold": threshold,
-        "use_watchlist": use_watchlist,
-        "skip_frames": skip_frames
-    })
+    # Create job ID
+    job_id = f"video_{int(time.time())}_{uuid.uuid4().hex[:8]}"
     
-    def video_analysis_worker(job_id, video_path, threshold, use_watchlist, skip_frames):
+    # Initialize job in memory
+    JOBS[job_id] = {
+        'id': job_id,
+        'type': 'video_analysis',
+        'status': 'queued',
+        'progress': 0.0,
+        'video_path': str(video_path),
+        'threshold': threshold,
+        'use_watchlist': use_watchlist,
+        'skip_frames': skip_frames,
+        'created_at': time.time(),
+        'result': None,
+        'error': None
+    }
+    
+    def video_analysis_worker(job_id):
         try:
-            store.update_job(job_id, status='running', progress=0.0)
+            job = JOBS.get(job_id)
+            if not job:
+                return
+                
+            job['status'] = 'running'
+            job['progress'] = 0.0
+            
+            video_path = job['video_path']
+            threshold = job['threshold']
+            use_watchlist = job['use_watchlist']
+            skip_frames = job['skip_frames']
             
             # Open video
             cap = cv2.VideoCapture(str(video_path))
             if not cap.isOpened():
-                store.update_job(job_id, status='error', error='Failed to open video file')
+                job['status'] = 'error'
+                job['error'] = 'Failed to open video file'
                 return
                 
             # Get video properties
@@ -1406,7 +1700,7 @@ def api_video_analysis_start():
                 
                 # Update progress
                 progress = frame_idx / total_frames
-                store.update_job(job_id, progress=progress)
+                job['progress'] = progress
                 
                 # Detect faces
                 faces = fa.get(frame)
@@ -1462,11 +1756,18 @@ def api_video_analysis_start():
                     bbox = face.bbox.astype(int)
                     thumb_rel = _save_thumb(frame, bbox.tolist(), f"video_analysis_{job_id}_{frame_idx}_{len(frame_detections['faces'])}")
                     
+                    # Also save full frame if it has matches
+                    frame_thumb_path = None
+                    if matched:
+                        frame_thumb_path = _save_frame(frame, f"frame_{job_id}_{frame_idx}")
+                    
                     face_data = {
                         'bbox': bbox.tolist(),
-                        'confidence': best_similarity,
+                        'confidence': float(face.det_score),
+                        'similarity': best_similarity,
                         'matched': matched,
-                        'thumb_path': thumb_rel
+                        'thumb_path': thumb_rel,
+                        'frame_path': frame_thumb_path
                     }
                     
                     if matched and best_match:
@@ -1510,14 +1811,18 @@ def api_video_analysis_start():
                 }
             }
             
-            store.update_job(job_id, status='done', progress=1.0, result=result)
+            job['status'] = 'done'
+            job['progress'] = 1.0
+            job['result'] = result
             
         except Exception as e:
-            store.update_job(job_id, status='error', error=str(e))
+            if job:
+                job['status'] = 'error'
+                job['error'] = str(e)
             print(f"Video analysis error: {e}")
     
     threading.Thread(target=video_analysis_worker, 
-                    args=(job_id, video_path, threshold, use_watchlist, skip_frames), 
+                    args=(job_id,), 
                     daemon=True).start()
     
     return jsonify({"job_id": job_id, "status": "queued"})
@@ -1683,6 +1988,7 @@ def process_rtsp_analysis_job(job_id: str):
         # For now, we'll simulate the process or try common patterns
         
         rtsp_urls = [
+            f"rtsp://127.0.0.1:8554/{rtsp_id}",
             f"rtsp://localhost:8554/{rtsp_id}",
             f"rtsp://192.168.1.100:554/{rtsp_id}",
             rtsp_id  # In case full URL is provided
@@ -1692,13 +1998,28 @@ def process_rtsp_analysis_job(job_id: str):
         for rtsp_url in rtsp_urls:
             try:
                 print(f"Trying RTSP URL: {rtsp_url}")
-                cap = cv2.VideoCapture(rtsp_url)
+                # Use more robust RTSP parameters
+                cap = cv2.VideoCapture(rtsp_url, cv2.CAP_FFMPEG)
+                
+                # Set buffer size to reduce latency and frame drops
+                cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                cap.set(cv2.CAP_PROP_FPS, 30)
+                
                 if cap.isOpened():
-                    ret, frame = cap.read()
-                    if ret and frame is not None:
-                        print(f"Successfully connected to {rtsp_url}")
+                    # Try to read multiple frames to ensure stable connection
+                    stable_frames = 0
+                    for _ in range(5):
+                        ret, frame = cap.read()
+                        if ret and frame is not None and frame.size > 0:
+                            stable_frames += 1
+                        else:
+                            break
+                    
+                    if stable_frames >= 3:  # Need at least 3 stable frames
+                        print(f"Successfully connected to {rtsp_url} with {stable_frames} stable frames")
                         break
                     else:
+                        print(f"Connection unstable to {rtsp_url}, only {stable_frames} frames")
                         cap.release()
                         cap = None
                 else:
@@ -1725,15 +2046,25 @@ def process_rtsp_analysis_job(job_id: str):
         
         total_frames = int(duration * fps)
         detections = []
+        unique_face_embeddings = []
+        total_faces = 0
+        matched_faces = 0
         frame_count = 0
+        processed_frames = 0
+        frames_with_faces = 0
+        frames_without_faces = 0
+        max_faces_in_frame = 0
         start_time = time.time()
         
         print(f"Processing RTSP stream: {fps} FPS, {width}x{height}, {total_frames} frames expected")
         
+        valid_frames = 0
+        corrupted_frames = 0
+        
         while frame_count < total_frames:
             ret, frame = cap.read()
             if not ret:
-                print("Failed to read frame, breaking")
+                print(f"Failed to read frame {frame_count}, breaking")
                 break
                 
             # Skip frames if requested
@@ -1741,61 +2072,110 @@ def process_rtsp_analysis_job(job_id: str):
                 frame_count += 1
                 continue
                 
+            processed_frames += 1
+            
             # Update progress
             progress = frame_count / total_frames
             job['progress'] = progress
             
             # Detect faces
-            if frame is not None:
-                try:
-                    faces = fa.get(frame)
-                    frame_detections = []
-                    
-                    for face in faces:
-                        bbox = face.bbox.astype(int).tolist()
-                        confidence = float(face.det_score)
-                        
-                        if confidence < threshold:
-                            continue
+            if frame is not None and frame.size > 0:
+                # Check if frame is valid (not corrupted)
+                if frame.shape[0] > 0 and frame.shape[1] > 0 and frame.shape[2] == 3:
+                    try:
+                        # Validate frame data
+                        if np.any(frame):  # Frame contains actual data
+                            valid_frames += 1
+                            faces = fa.get(frame)
+                            frame_detections = []
+                            num_faces = len(faces)
                             
-                        # Face matching
-                        matched = False
-                        person_id = None
-                        person_name = None
-                        
-                        if gallery and face.embedding is not None:
-                            face_emb = face.embedding / (np.linalg.norm(face.embedding) + 1e-10)
+                            if valid_frames % 100 == 0:  # Log every 100 valid frames
+                                print(f"Processed {valid_frames} valid frames, found {total_faces} faces so far")
                             
-                            best_sim = 0
-                            best_person = None
+                            if num_faces > 0:
+                                frames_with_faces += 1
+                                max_faces_in_frame = max(max_faces_in_frame, num_faces)
+                            else:
+                                frames_without_faces += 1
+                                
+                            total_faces += num_faces
                             
-                            for pid, pname, gallery_emb in gallery:
-                                sim = np.dot(face_emb, gallery_emb)
-                                if sim > best_sim and sim > threshold:
-                                    best_sim = sim
-                                    best_person = (pid, pname)
+                            for face in faces:
+                                bbox = face.bbox.astype(int).tolist()
+                                confidence = float(face.det_score)
+                                
+                                # Get face embedding for uniqueness and matching
+                                emb = face.embedding
+                                emb = emb / (np.linalg.norm(emb) + 1e-10)
+                                
+                                # Check for uniqueness (basic clustering)
+                                is_unique = True
+                                for unique_emb in unique_face_embeddings:
+                                    similarity = float(np.dot(unique_emb, emb))
+                                    if similarity > 0.8:  # High similarity threshold for uniqueness
+                                        is_unique = False
+                                        break
+                                
+                                if is_unique:
+                                    unique_face_embeddings.append(emb)
+                                    
+                                # Face matching against watchlist
+                                matched = False
+                                person_id = None
+                                person_name = None
+                                best_similarity = 0
+                                
+                                if use_watchlist and gallery:
+                                    for pid, pname, gallery_emb in gallery:
+                                        sim = float(np.dot(gallery_emb, emb))
+                                        if sim > best_similarity:
+                                            best_similarity = sim
+                                            if sim >= threshold:
+                                                matched = True
+                                                person_id = pid
+                                                person_name = pname
+                                
+                                if matched:
+                                    matched_faces += 1
+                                
+                                # Save face thumbnail
+                                thumb_path = _save_thumb(frame, bbox, f"rtsp_{job_id}_{frame_count}_{len(frame_detections)}")
+                                
+                                # Save full frame if matched
+                                frame_path = None
+                                if matched:
+                                    frame_path = _save_frame(frame, f"rtsp_frame_{job_id}_{frame_count}")
+                                
+                                frame_detections.append({
+                                    'bbox': bbox,
+                                    'confidence': confidence,
+                                    'similarity': best_similarity,
+                                    'matched': matched,
+                                    'person_id': person_id,
+                                    'person_name': person_name,
+                                    'thumb_path': thumb_path,
+                                    'frame_path': frame_path
+                                })
                             
-                            if best_person:
-                                matched = True
-                                person_id, person_name = best_person
-                        
-                        frame_detections.append({
-                            'bbox': bbox,
-                            'confidence': confidence,
-                            'matched': matched,
-                            'person_id': person_id,
-                            'person_name': person_name
-                        })
-                    
-                    if frame_detections:
-                        detections.append({
-                            'frame': frame_count,
-                            'timestamp': frame_count / fps,
-                            'faces': frame_detections
-                        })
-                        
-                except Exception as e:
-                    print(f"Error processing frame {frame_count}: {e}")
+                            if frame_detections:
+                                detections.append({
+                                    'frame': frame_count,
+                                    'timestamp': frame_count / fps,
+                                    'faces': frame_detections
+                                })
+                        else:
+                            # Skip empty/black frames
+                            corrupted_frames += 1
+                    except Exception as face_detect_error:
+                        print(f"Face detection error on frame {frame_count}: {face_detect_error}")
+                        corrupted_frames += 1
+                else:
+                    corrupted_frames += 1
+                    if corrupted_frames % 50 == 0:  # Log every 50 corrupted frames
+                        print(f"Skipped {corrupted_frames} corrupted frames so far")
+            else:
+                corrupted_frames += 1
             
             frame_count += 1
             
@@ -1806,21 +2186,18 @@ def process_rtsp_analysis_job(job_id: str):
         
         cap.release()
         
-        # Generate summary
-        total_faces = sum(len(d['faces']) for d in detections)
-        matched_faces = sum(len([f for f in d['faces'] if f['matched']]) for d in detections)
-        frames_with_faces = len([d for d in detections if d['faces']])
-        frames_without_faces = frame_count - frames_with_faces
-        max_faces_in_frame = max([len(d['faces']) for d in detections], default=0)
-        avg_faces_per_frame = total_faces / frame_count if frame_count > 0 else 0
+        # Calculate final statistics
+        unique_faces = len(unique_face_embeddings)
+        avg_faces_per_frame = total_faces / processed_frames if processed_frames > 0 else 0
+        processing_time = time.time() - start_time
         
         result = {
             'totalFrames': frame_count,
-            'processedFrames': frame_count,
+            'processedFrames': processed_frames,
             'totalFaces': total_faces,
             'matchedFaces': matched_faces,
-            'uniqueFaces': len(set(f['person_id'] for d in detections for f in d['faces'] if f['person_id'])),
-            'processingTime': time.time() - start_time,
+            'uniqueFaces': unique_faces,
+            'processingTime': processing_time,
             'detections': detections,
             'summary': {
                 'videoInfo': {
@@ -1841,6 +2218,15 @@ def process_rtsp_analysis_job(job_id: str):
         job['result'] = result
         job['status'] = 'done'
         job['progress'] = 1.0
+        
+        print(f"RTSP analysis completed:")
+        print(f"  - Total frames processed: {frame_count}")
+        print(f"  - Valid frames: {valid_frames}")  
+        print(f"  - Corrupted frames: {corrupted_frames}")
+        print(f"  - Total faces detected: {total_faces}")
+        print(f"  - Matched faces: {matched_faces}")
+        print(f"  - Unique people: {unique_faces}")
+        print(f"  - Processing time: {processing_time:.2f}s")
         
         print(f"RTSP analysis completed: {total_faces} faces, {matched_faces} matches")
         

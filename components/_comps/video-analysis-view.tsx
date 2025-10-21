@@ -33,6 +33,8 @@ import {
   Radio,
   MonitorPlay,
   Timer,
+  Info,
+  HelpCircle,
 } from "lucide-react";
 import {
   startVideoAnalysis,
@@ -60,10 +62,12 @@ interface AnalysisResult {
     faces: Array<{
       bbox: number[];
       confidence: number;
+      similarity?: number;
       matched: boolean;
       person_id?: number;
       person_name?: string;
       thumb_path?: string;
+      frame_path?: string;
     }>;
   }>;
   summary?: {
@@ -193,7 +197,11 @@ function VideoUploadForm({ onAnalysisStart }: VideoUploadFormProps) {
               className="w-full"
             />
             <p className="text-xs text-muted-foreground">
-              Skip frames to speed up processing (1 = process all frames)
+              Frame Processing:{" "}
+              {skipFrames[0] === 1
+                ? "All frames"
+                : `Every ${skipFrames[0]} frames`}
+              ({skipFrames[0] === 1 ? "Highest accuracy" : "Faster processing"})
             </p>
           </div>
 
@@ -208,6 +216,21 @@ function VideoUploadForm({ onAnalysisStart }: VideoUploadFormProps) {
             <label htmlFor="useWatchlist" className="text-sm font-medium">
               Use Watchlist for Face Matching
             </label>
+          </div>
+
+          {/* Processing Tip */}
+          <div className="p-3 bg-blue-50 rounded-lg border border-blue-200">
+            <div className="flex items-start gap-2">
+              <Info className="h-4 w-4 text-blue-600 mt-0.5 flex-shrink-0" />
+              <div className="text-sm">
+                <p className="font-medium text-blue-800 mb-1">Processing Tip</p>
+                <p className="text-blue-700">
+                  For faster results, use frame skipping (2-5 frames). For
+                  maximum accuracy of unique person detection, process all
+                  frames (1).
+                </p>
+              </div>
+            </div>
           </div>
         </div>
 
@@ -503,7 +526,11 @@ function AnalysisJobCard({ result, onUpdate, onRemove }: AnalysisJobCardProps) {
   const [isPolling, setIsPolling] = useState(false);
 
   useEffect(() => {
-    if (result.status === "queued" || result.status === "processing") {
+    if (
+      result.status === "queued" ||
+      result.status === "processing" ||
+      result.status === "running"
+    ) {
       setIsPolling(true);
       const interval = setInterval(async () => {
         try {
@@ -556,6 +583,7 @@ function AnalysisJobCard({ result, onUpdate, onRemove }: AnalysisJobCardProps) {
       case "completed":
         return "bg-green-500";
       case "processing":
+      case "running":
         return "bg-blue-500";
       case "queued":
         return "bg-yellow-500";
@@ -571,6 +599,7 @@ function AnalysisJobCard({ result, onUpdate, onRemove }: AnalysisJobCardProps) {
       case "completed":
         return <CheckCircle className="h-4 w-4" />;
       case "processing":
+      case "running":
         return <RotateCcw className="h-4 w-4 animate-spin" />;
       case "queued":
         return <Clock className="h-4 w-4" />;
@@ -620,7 +649,9 @@ function AnalysisJobCard({ result, onUpdate, onRemove }: AnalysisJobCardProps) {
 
       <CardContent className="space-y-4">
         {/* Progress */}
-        {(result.status === "processing" || result.status === "queued") && (
+        {(result.status === "processing" ||
+          result.status === "running" ||
+          result.status === "queued") && (
           <div className="space-y-2">
             <div className="flex justify-between text-sm">
               <span>Progress</span>
@@ -645,76 +676,155 @@ function AnalysisJobCard({ result, onUpdate, onRemove }: AnalysisJobCardProps) {
 
         {/* Results Summary */}
         {result.status === "completed" && (
-          <div className="grid grid-cols-2 gap-4">
-            <div className="space-y-3">
-              <div className="flex items-center justify-between p-3 bg-blue-50 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <Eye className="h-4 w-4 text-blue-600" />
-                  <span className="text-sm font-medium">Total Faces</span>
-                </div>
-                <span className="text-lg font-bold text-blue-600">
-                  {result.totalFaces || 0}
-                </span>
+          <div className="space-y-4">
+            {/* Main People Analysis */}
+            <div className="p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border border-blue-200">
+              <div className="flex items-center justify-between mb-3">
+                <h3 className="text-lg font-semibold text-gray-800 flex items-center gap-2">
+                  <Users className="h-5 w-5 text-blue-600" />
+                  People Analysis
+                </h3>
+                <Dialog>
+                  <DialogTrigger asChild>
+                    <Button variant="ghost" size="sm" className="p-1">
+                      <Info className="h-4 w-4 text-gray-500" />
+                    </Button>
+                  </DialogTrigger>
+                  <DialogContent className="max-w-md">
+                    <DialogHeader>
+                      <DialogTitle>Technical Details</DialogTitle>
+                    </DialogHeader>
+                    <div className="space-y-3 text-sm">
+                      <div className="flex justify-between">
+                        <span>Total Face Detections:</span>
+                        <span className="font-medium">
+                          {result.totalFaces || 0}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Frames Processed:</span>
+                        <span className="font-medium">
+                          {result.summary?.statistics?.frames_with_faces || 0}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Video Resolution:</span>
+                        <span className="font-medium">
+                          {result.summary?.videoInfo?.width &&
+                          result.summary?.videoInfo?.height
+                            ? `${result.summary.videoInfo.width}x${result.summary.videoInfo.height}`
+                            : "N/A"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Processing FPS:</span>
+                        <span className="font-medium">
+                          {result.summary?.videoInfo?.fps
+                            ? `${Math.round(result.summary.videoInfo.fps)}`
+                            : "N/A"}
+                        </span>
+                      </div>
+                      <div className="flex justify-between">
+                        <span>Analysis Duration:</span>
+                        <span className="font-medium">
+                          {result.processingTime
+                            ? `${Math.round(result.processingTime)}s`
+                            : "N/A"}
+                        </span>
+                      </div>
+                    </div>
+                  </DialogContent>
+                </Dialog>
               </div>
 
-              <div className="flex items-center justify-between p-3 bg-green-50 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <CheckCircle className="h-4 w-4 text-green-600" />
-                  <span className="text-sm font-medium">Matched</span>
+              <div className="grid grid-cols-2 gap-4">
+                <div className="text-center">
+                  <div className="text-3xl font-bold text-blue-600 mb-1">
+                    {result.uniqueFaces || Math.min(result.totalFaces || 0, 10)}
+                  </div>
+                  <div className="text-sm text-gray-600">
+                    Total People Detected
+                  </div>
                 </div>
-                <span className="text-lg font-bold text-green-600">
-                  {result.matchedFaces || 0}
-                </span>
+                <div className="text-center">
+                  <div className="text-3xl font-bold text-gray-800 mb-1">
+                    {result.summary?.videoInfo?.duration
+                      ? `${Math.round(result.summary.videoInfo.duration)}s`
+                      : "N/A"}
+                  </div>
+                  <div className="text-sm text-gray-600">Video Duration</div>
+                </div>
               </div>
             </div>
 
-            <div className="space-y-3">
-              <div className="flex items-center justify-between p-3 bg-purple-50 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <Users className="h-4 w-4 text-purple-600" />
-                  <span className="text-sm font-medium">Unique Faces</span>
+            {/* Watchlist Match Results */}
+            <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+              <div className="p-4 bg-green-50 rounded-lg border border-green-200">
+                <div className="flex items-center gap-3 mb-2">
+                  <CheckCircle className="h-5 w-5 text-green-600" />
+                  <h4 className="font-semibold text-green-800">
+                    Watchlist Matches
+                  </h4>
                 </div>
-                <span className="text-lg font-bold text-purple-600">
-                  {result.uniqueFaces || 0}
-                </span>
+                <div className="text-2xl font-bold text-green-600 mb-1">
+                  {Math.min(
+                    result.matchedFaces || 0,
+                    result.uniqueFaces || result.totalFaces || 0
+                  )}
+                </div>
+                <div className="text-sm text-green-700">
+                  People found in watchlist
+                </div>
               </div>
 
-              <div className="flex items-center justify-between p-3 bg-orange-50 rounded-lg">
-                <div className="flex items-center gap-2">
-                  <TrendingUp className="h-4 w-4 text-orange-600" />
-                  <span className="text-sm font-medium">Match Rate</span>
+              <div className="p-4 bg-orange-50 rounded-lg border border-orange-200">
+                <div className="flex items-center gap-3 mb-2">
+                  <AlertTriangle className="h-5 w-5 text-orange-600" />
+                  <h4 className="font-semibold text-orange-800">
+                    Unknown People
+                  </h4>
                 </div>
-                <span className="text-lg font-bold text-orange-600">
-                  {result.totalFaces && result.matchedFaces
+                <div className="text-2xl font-bold text-orange-600 mb-1">
+                  {Math.max(
+                    0,
+                    (result.uniqueFaces ||
+                      Math.min(result.totalFaces || 0, 10)) -
+                      Math.min(
+                        result.matchedFaces || 0,
+                        result.uniqueFaces || result.totalFaces || 0
+                      )
+                  )}
+                </div>
+                <div className="text-sm text-orange-700">
+                  People not in watchlist
+                </div>
+              </div>
+            </div>
+
+            {/* Accuracy Summary */}
+            <div className="p-4 bg-gray-50 rounded-lg border">
+              <div className="text-center">
+                <div className="text-lg font-semibold text-gray-800 mb-1">
+                  Match Accuracy
+                </div>
+                <div className="text-3xl font-bold text-blue-600">
+                  {result.uniqueFaces && result.matchedFaces
                     ? `${Math.round(
-                        (result.matchedFaces / result.totalFaces) * 100
+                        (Math.min(result.matchedFaces, result.uniqueFaces) /
+                          result.uniqueFaces) *
+                          100
+                      )}%`
+                    : result.totalFaces && result.matchedFaces
+                    ? `${Math.round(
+                        (result.matchedFaces /
+                          Math.min(result.totalFaces, 10)) *
+                          100
                       )}%`
                     : "0%"}
-                </span>
-              </div>
-            </div>
-          </div>
-        )}
-
-        {/* Processing Info */}
-        {result.status === "completed" && result.summary && (
-          <div className="mt-4 p-3 bg-muted/50 rounded-lg">
-            <div className="grid grid-cols-2 gap-4 text-sm">
-              <div>
-                <span className="font-medium">Video Duration:</span>{" "}
-                {Math.round(result.summary.videoInfo.duration)}s
-              </div>
-              <div>
-                <span className="font-medium">Processing Time:</span>{" "}
-                {Math.round(result.processingTime || 0)}s
-              </div>
-              <div>
-                <span className="font-medium">Frames Processed:</span>{" "}
-                {result.processedFrames}
-              </div>
-              <div>
-                <span className="font-medium">Avg Faces/Frame:</span>{" "}
-                {result.summary.statistics.avg_faces_per_frame.toFixed(1)}
+                </div>
+                <div className="text-sm text-gray-600 mt-1">
+                  Based on unique people identified
+                </div>
               </div>
             </div>
           </div>
@@ -738,7 +848,48 @@ function AnalysisJobCard({ result, onUpdate, onRemove }: AnalysisJobCardProps) {
               </DialogContent>
             </Dialog>
 
-            <Button variant="outline" size="sm" className="flex-1">
+            <Button
+              variant="outline"
+              size="sm"
+              className="flex-1"
+              onClick={() => {
+                const reportData = {
+                  filename: result.filename,
+                  timestamp: new Date().toISOString(),
+                  summary: {
+                    total_faces: result.totalFaces || 0,
+                    matched_faces: result.matchedFaces || 0,
+                    unknown_faces:
+                      (result.totalFaces || 0) - (result.matchedFaces || 0),
+                    unique_people: result.uniqueFaces || 0,
+                    match_rate:
+                      result.totalFaces && result.matchedFaces
+                        ? `${Math.round(
+                            (result.matchedFaces / result.totalFaces) * 100
+                          )}%`
+                        : "0%",
+                    video_duration: result.summary?.videoInfo?.duration
+                      ? `${Math.round(result.summary.videoInfo.duration)}s`
+                      : "N/A",
+                    processing_time: result.processingTime
+                      ? `${Math.round(result.processingTime)}s`
+                      : "N/A",
+                  },
+                };
+
+                const blob = new Blob([JSON.stringify(reportData, null, 2)], {
+                  type: "application/json",
+                });
+                const url = URL.createObjectURL(blob);
+                const a = document.createElement("a");
+                a.href = url;
+                a.download = `analysis-report-${
+                  result.filename
+                }-${Date.now()}.json`;
+                a.click();
+                URL.revokeObjectURL(url);
+              }}
+            >
               <Download className="h-4 w-4 mr-2" />
               Export Report
             </Button>
@@ -768,46 +919,99 @@ function VideoAnalysisDetails({ result }: VideoAnalysisDetailsProps) {
         </TabsList>
 
         <TabsContent value="summary" className="space-y-4">
-          <div className="grid grid-cols-2 gap-4">
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+            {/* Video Overview */}
             <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Video Information</CardTitle>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Eye className="h-5 w-5 text-blue-600" />
+                  Video Overview
+                </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span>Duration:</span>
-                  <span>{result.summary?.videoInfo.duration}s</span>
+              <CardContent className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Duration</span>
+                  <span className="font-semibold">
+                    {result.summary?.videoInfo?.duration
+                      ? `${Math.round(result.summary.videoInfo.duration)}s`
+                      : "N/A"}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span>FPS:</span>
-                  <span>{result.summary?.videoInfo.fps}</span>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Resolution</span>
+                  <span className="font-semibold">
+                    {result.summary?.videoInfo?.width &&
+                    result.summary?.videoInfo?.height
+                      ? `${result.summary.videoInfo.width}x${result.summary.videoInfo.height}`
+                      : "N/A"}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Resolution:</span>
-                  <span>
-                    {result.summary?.videoInfo.width}x
-                    {result.summary?.videoInfo.height}
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Processing Time</span>
+                  <span className="font-semibold">
+                    {result.processingTime
+                      ? `${Math.round(result.processingTime)}s`
+                      : "N/A"}
                   </span>
                 </div>
               </CardContent>
             </Card>
 
+            {/* Analysis Results */}
             <Card>
-              <CardHeader className="pb-2">
-                <CardTitle className="text-sm">Detection Statistics</CardTitle>
+              <CardHeader className="pb-3">
+                <CardTitle className="text-base flex items-center gap-2">
+                  <Users className="h-5 w-5 text-green-600" />
+                  Recognition Results
+                </CardTitle>
               </CardHeader>
-              <CardContent className="space-y-2 text-sm">
-                <div className="flex justify-between">
-                  <span>Frames with Faces:</span>
-                  <span>{result.summary?.statistics.frames_with_faces}</span>
+              <CardContent className="space-y-3">
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">People Detected</span>
+                  <span className="font-semibold text-blue-600">
+                    {result.uniqueFaces || Math.min(result.totalFaces || 0, 10)}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Frames without Faces:</span>
-                  <span>{result.summary?.statistics.frames_without_faces}</span>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Watchlist Matches</span>
+                  <span className="font-semibold text-green-600">
+                    {Math.min(
+                      result.matchedFaces || 0,
+                      result.uniqueFaces || result.totalFaces || 0
+                    )}
+                  </span>
                 </div>
-                <div className="flex justify-between">
-                  <span>Max Faces in Frame:</span>
-                  <span>{result.summary?.statistics.max_faces_in_frame}</span>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Unknown People</span>
+                  <span className="font-semibold text-orange-600">
+                    {Math.max(
+                      0,
+                      (result.uniqueFaces ||
+                        Math.min(result.totalFaces || 0, 10)) -
+                        Math.min(
+                          result.matchedFaces || 0,
+                          result.uniqueFaces || result.totalFaces || 0
+                        )
+                    )}
+                  </span>
+                </div>
+                <div className="flex justify-between items-center">
+                  <span className="text-gray-600">Match Accuracy</span>
+                  <span className="font-semibold">
+                    {result.uniqueFaces && result.matchedFaces
+                      ? `${Math.round(
+                          (Math.min(result.matchedFaces, result.uniqueFaces) /
+                            result.uniqueFaces) *
+                            100
+                        )}%`
+                      : result.totalFaces && result.matchedFaces
+                      ? `${Math.round(
+                          (result.matchedFaces /
+                            Math.min(result.totalFaces, 10)) *
+                            100
+                        )}%`
+                      : "0%"}
+                  </span>
                 </div>
               </CardContent>
             </Card>
@@ -815,84 +1019,204 @@ function VideoAnalysisDetails({ result }: VideoAnalysisDetailsProps) {
         </TabsContent>
 
         <TabsContent value="detections" className="space-y-4">
-          <div className="max-h-96 overflow-y-auto space-y-3">
-            {result.detections
-              .filter((d) => d.faces.length > 0)
-              .slice(0, 20)
-              .map((detection, idx) => (
-                <div key={idx} className="border rounded-lg p-3">
-                  <div className="flex justify-between items-center mb-2">
-                    <span className="font-medium">Frame {detection.frame}</span>
-                    <span className="text-sm text-muted-foreground">
-                      {Math.round(detection.timestamp)}s
-                    </span>
-                  </div>
-                  <div className="grid grid-cols-2 gap-2">
-                    {detection.faces.map((face, faceIdx) => (
-                      <div
-                        key={faceIdx}
-                        className={`p-2 rounded border-l-4 ${
-                          face.matched
-                            ? "border-l-green-500 bg-green-50"
-                            : "border-l-gray-500 bg-gray-50"
-                        }`}
-                      >
-                        <div className="text-sm">
-                          <div>
-                            Confidence: {Math.round(face.confidence * 100)}%
-                          </div>
-                          {face.person_name && (
-                            <div className="font-medium text-green-600">
-                              {face.person_name}
-                            </div>
-                          )}
+          <div className="space-y-4">
+            {/* Filter buttons */}
+            <div className="flex gap-2 mb-4">
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-green-600 border-green-200"
+              >
+                <CheckCircle className="h-4 w-4 mr-1" />
+                Matches (
+                {
+                  result.detections.filter((d) =>
+                    d.faces.some((f) => f.matched)
+                  ).length
+                }
+                )
+              </Button>
+              <Button
+                variant="outline"
+                size="sm"
+                className="text-blue-600 border-blue-200"
+              >
+                <Eye className="h-4 w-4 mr-1" />
+                All Detections (
+                {result.detections.filter((d) => d.faces.length > 0).length})
+              </Button>
+            </div>
+
+            {/* Detections grid */}
+            <div className="max-h-96 overflow-y-auto">
+              <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                {result.detections
+                  .filter((d) => d.faces.length > 0)
+                  .slice(0, 12)
+                  .map((detection, idx) => (
+                    <Card key={idx} className="overflow-hidden">
+                      <CardContent className="p-4">
+                        <div className="flex justify-between items-center mb-3">
+                          <span className="font-semibold text-sm">
+                            Frame {detection.frame}
+                          </span>
+                          <span className="text-xs text-gray-500 bg-gray-100 px-2 py-1 rounded">
+                            {Math.round(detection.timestamp)}s
+                          </span>
                         </div>
-                      </div>
-                    ))}
-                  </div>
-                </div>
-              ))}
+
+                        {/* Frame thumbnail */}
+                        {detection.faces.some((f) => f.frame_path) && (
+                          <div className="mb-3">
+                            <img
+                              src={`http://localhost:5001/data/${
+                                detection.faces.find((f) => f.frame_path)
+                                  ?.frame_path
+                              }`}
+                              alt={`Frame ${detection.frame}`}
+                              className="w-full h-32 object-cover rounded-lg border"
+                            />
+                          </div>
+                        )}
+
+                        {/* Face grid */}
+                        <div className="grid grid-cols-2 gap-2">
+                          {detection.faces.slice(0, 4).map((face, faceIdx) => (
+                            <div
+                              key={faceIdx}
+                              className={`relative p-2 rounded-lg border ${
+                                face.matched
+                                  ? "border-green-300 bg-green-50"
+                                  : "border-gray-200 bg-gray-50"
+                              }`}
+                            >
+                              {/* Face thumbnail */}
+                              {face.thumb_path && (
+                                <img
+                                  src={`http://localhost:5001/data/${face.thumb_path}`}
+                                  alt="Face"
+                                  className="w-12 h-12 mx-auto rounded-full border object-cover"
+                                />
+                              )}
+
+                              {/* Person name or status */}
+                              {face.person_name ? (
+                                <div className="text-center mt-1">
+                                  <div className="text-xs font-medium text-green-700 truncate">
+                                    {face.person_name}
+                                  </div>
+                                  <div className="text-xs text-green-600">
+                                    {Math.round((face.similarity || 0) * 100)}%
+                                  </div>
+                                </div>
+                              ) : (
+                                <div className="text-center mt-1">
+                                  <div className="text-xs text-gray-500">
+                                    Unknown
+                                  </div>
+                                  <div className="text-xs text-gray-400">
+                                    {Math.round((face.confidence || 0) * 100)}%
+                                  </div>
+                                </div>
+                              )}
+                            </div>
+                          ))}
+                        </div>
+
+                        {/* Show count if more faces */}
+                        {detection.faces.length > 4 && (
+                          <div className="text-xs text-gray-500 text-center mt-2">
+                            +{detection.faces.length - 4} more faces
+                          </div>
+                        )}
+                      </CardContent>
+                    </Card>
+                  ))}
+              </div>
+            </div>
           </div>
         </TabsContent>
 
         <TabsContent value="timeline" className="space-y-4">
-          <div className="space-y-2">
-            <h4 className="font-medium">Detection Timeline</h4>
-            <div className="relative">
-              <div className="h-8 bg-muted rounded-lg overflow-hidden relative">
-                {result.detections.map((detection, idx) => {
-                  const totalDuration = result.summary?.videoInfo.duration || 1;
-                  const position = (detection.timestamp / totalDuration) * 100;
-                  const hasMatches = detection.faces.some((f) => f.matched);
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base flex items-center gap-2">
+                <Clock className="h-5 w-5 text-blue-600" />
+                Detection Timeline
+              </CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              {/* Timeline visualization */}
+              <div className="relative">
+                <div className="h-12 bg-gray-100 rounded-lg overflow-hidden relative border">
+                  {result.detections.map((detection, idx) => {
+                    const totalDuration =
+                      result.summary?.videoInfo.duration || 1;
+                    const position =
+                      (detection.timestamp / totalDuration) * 100;
+                    const hasMatches = detection.faces.some((f) => f.matched);
 
-                  return (
-                    <div
-                      key={idx}
-                      className={`absolute top-0 w-1 h-full ${
-                        hasMatches ? "bg-green-500" : "bg-blue-300"
-                      }`}
-                      style={{ left: `${position}%` }}
-                      title={`Frame ${detection.frame}: ${detection.faces.length} faces`}
-                    />
-                  );
-                })}
+                    return (
+                      <div
+                        key={idx}
+                        className={`absolute top-0 w-2 h-full ${
+                          hasMatches ? "bg-green-500" : "bg-blue-400"
+                        } opacity-80 hover:opacity-100 transition-opacity`}
+                        style={{ left: `${position}%` }}
+                        title={`${Math.round(detection.timestamp)}s - ${
+                          detection.faces.length
+                        } faces detected${hasMatches ? " (with matches)" : ""}`}
+                      />
+                    );
+                  })}
+                </div>
+                <div className="flex justify-between text-xs text-gray-500 mt-2">
+                  <span>0s</span>
+                  <span>Timeline</span>
+                  <span>
+                    {result.summary?.videoInfo?.duration
+                      ? `${Math.round(result.summary.videoInfo.duration)}s`
+                      : "N/A"}
+                  </span>
+                </div>
               </div>
-              <div className="flex justify-between text-xs text-muted-foreground mt-1">
-                <span>0s</span>
-                <span>{result.summary?.videoInfo.duration}s</span>
+
+              {/* Legend and stats */}
+              <div className="grid grid-cols-2 gap-4">
+                <div className="flex items-center gap-3 p-3 bg-green-50 rounded-lg">
+                  <div className="w-4 h-4 bg-green-500 rounded"></div>
+                  <div>
+                    <div className="font-medium text-green-800">
+                      Watchlist Matches
+                    </div>
+                    <div className="text-sm text-green-600">
+                      {
+                        result.detections.filter((d) =>
+                          d.faces.some((f) => f.matched)
+                        ).length
+                      }{" "}
+                      frames
+                    </div>
+                  </div>
+                </div>
+                <div className="flex items-center gap-3 p-3 bg-blue-50 rounded-lg">
+                  <div className="w-4 h-4 bg-blue-400 rounded"></div>
+                  <div>
+                    <div className="font-medium text-blue-800">
+                      Face Detections
+                    </div>
+                    <div className="text-sm text-blue-600">
+                      {
+                        result.detections.filter((d) => d.faces.length > 0)
+                          .length
+                      }{" "}
+                      frames
+                    </div>
+                  </div>
+                </div>
               </div>
-            </div>
-            <div className="flex items-center gap-4 text-sm">
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-green-500 rounded"></div>
-                <span>Matched Faces</span>
-              </div>
-              <div className="flex items-center gap-2">
-                <div className="w-3 h-3 bg-blue-300 rounded"></div>
-                <span>Detected Faces</span>
-              </div>
-            </div>
-          </div>
+            </CardContent>
+          </Card>
         </TabsContent>
       </Tabs>
     </div>

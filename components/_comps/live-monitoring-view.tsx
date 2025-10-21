@@ -12,7 +12,7 @@ import {
 } from "@/components/ui/dialog";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Badge } from "@/components/ui/badge";
-import { Camera, Plus, Trash2, X } from "lucide-react";
+import { Camera, Plus, Trash2, X, Video, Image, Info } from "lucide-react";
 import Link from "next/link";
 import { Slider } from "@/components/ui/slider";
 import {
@@ -21,6 +21,7 @@ import {
   rtspStatus,
   connectRtspEvents,
   snapshotUrl,
+  streamUrl,
   MIZVA_URL,
   listCameras,
   cleanupCameras,
@@ -28,6 +29,7 @@ import {
 } from "@/backend_integration/api_mizva";
 import { Play, Pause, Trash2 as Delete } from "lucide-react";
 import { useAlerts } from "@/contexts/AlertContext";
+import { LiveVideoStream } from "@/components/_comps/live-video-stream";
 
 type Cam = { id: string; url: string; name: string };
 
@@ -57,6 +59,8 @@ function CameraCard({
   const [snapshotKey, setSnapshotKey] = useState(0);
   const [actionLoading, setActionLoading] = useState(false);
   const [initialized, setInitialized] = useState(false);
+  const [viewMode, setViewMode] = useState<"snapshot" | "live">("snapshot");
+  const [currentFps, setCurrentFps] = useState(0);
   const { addAlert } = useAlerts();
 
   useEffect(() => {
@@ -242,6 +246,33 @@ function CameraCard({
           {cam.name || `Camera ${cam.id.slice(-6)}`}
         </CardTitle>
         <div className="flex items-center gap-2">
+          {/* View mode toggle */}
+          <div className="flex border rounded-md p-1 bg-muted/30">
+            <Button
+              size="sm"
+              variant={viewMode === "snapshot" ? "default" : "ghost"}
+              className="h-6 px-2 text-xs"
+              onClick={() => setViewMode("snapshot")}
+            >
+              <Image className="h-3 w-3 mr-1" />
+              Snapshot
+            </Button>
+            <Button
+              size="sm"
+              variant={viewMode === "live" ? "default" : "ghost"}
+              className="h-6 px-2 text-xs"
+              onClick={() => setViewMode("live")}
+            >
+              <Video className="h-3 w-3 mr-1" />
+              Live
+            </Button>
+          </div>
+
+          {running && viewMode === "live" && (
+            <Badge variant="secondary" className="text-xs">
+              {currentFps} FPS
+            </Badge>
+          )}
           {running && <LiveBadge />}
           {!initialized && (
             <Badge variant="outline" className="text-xs">
@@ -258,44 +289,58 @@ function CameraCard({
         </div>
       </CardHeader>
       <CardContent className="space-y-3">
-        <div className="relative aspect-video rounded-xl border bg-muted/10 overflow-hidden">
-          {running ? (
-            <img
-              src={`${snapshotUrl(cam.id)}?t=${snapshotKey}`}
-              alt={"Live snapshot"}
-              className="h-full w-full object-cover transition-opacity duration-300"
-              loading="lazy"
-              style={{
-                imageRendering: "crisp-edges",
-                filter: "contrast(1.1) saturate(1.05)",
-              }}
-              onLoad={(e) => {
-                const target = e.target as HTMLImageElement;
-                target.style.opacity = "1";
-              }}
-              onError={(e) => {
-                const target = e.target as HTMLImageElement;
-                target.style.display = "none";
-              }}
-            />
-          ) : (
-            <div className="h-full w-full flex items-center justify-center text-muted-foreground">
-              <div className="text-center">
-                <Camera className="h-12 w-12 opacity-50 mx-auto mb-2" />
-                <p className="text-sm">
-                  {!initialized ? "Initializing..." : "Camera stopped"}
-                </p>
+        {/* Video Display Area */}
+        {viewMode === "live" ? (
+          <LiveVideoStream
+            camId={cam.id}
+            camName={cam.name || `Camera ${cam.id.slice(-6)}`}
+            isRunning={running}
+            className="rounded-xl"
+            onFpsChange={setCurrentFps}
+          />
+        ) : (
+          <div className="relative aspect-video rounded-xl border bg-muted/10 overflow-hidden">
+            {running ? (
+              <img
+                src={`${snapshotUrl(cam.id)}?t=${snapshotKey}`}
+                alt={"Live snapshot"}
+                className="h-full w-full object-cover transition-opacity duration-300"
+                loading="lazy"
+                style={{
+                  imageRendering: "crisp-edges",
+                  filter: "contrast(1.1) saturate(1.05)",
+                }}
+                onLoad={(e) => {
+                  const target = e.target as HTMLImageElement;
+                  target.style.opacity = "1";
+                }}
+                onError={(e) => {
+                  const target = e.target as HTMLImageElement;
+                  target.style.display = "none";
+                }}
+              />
+            ) : (
+              <div className="h-full w-full flex items-center justify-center text-muted-foreground">
+                <div className="text-center">
+                  <Camera className="h-12 w-12 opacity-50 mx-auto mb-2" />
+                  <p className="text-sm">
+                    {!initialized ? "Initializing..." : "Camera stopped"}
+                  </p>
+                </div>
               </div>
-            </div>
-          )}
-          {running && (
-            <div className="absolute right-2 bottom-2">
-              <Badge variant="secondary" className="backdrop-blur bg-black/40">
-                Confidence: {lastConfidence ?? "-"}%
-              </Badge>
-            </div>
-          )}
-        </div>
+            )}
+            {running && (
+              <div className="absolute right-2 bottom-2">
+                <Badge
+                  variant="secondary"
+                  className="backdrop-blur bg-black/40"
+                >
+                  Confidence: {lastConfidence ?? "-"}%
+                </Badge>
+              </div>
+            )}
+          </div>
+        )}
 
         {/* Control Buttons */}
         <div className="flex gap-2">
@@ -374,6 +419,7 @@ export function LiveMonitoringView() {
   const [name, setName] = useState("");
   const [known, setKnown] = useState<File | null>(null);
   const [threshold, setThreshold] = useState<number[]>([60]);
+  const [qualityThreshold, setQualityThreshold] = useState<number[]>([35]);
   const [fps, setFps] = useState<string>("3");
   const [transport, setTransport] = useState<"tcp" | "udp">("tcp");
   const [timeoutMs, setTimeoutMs] = useState<string>("5000000");
@@ -434,6 +480,7 @@ export function LiveMonitoringView() {
       setRtsp("");
       setName("");
       setKnown(null);
+      setQualityThreshold([35]);
       setOpen(false);
 
       // Reload cameras to sync with backend
@@ -544,21 +591,45 @@ export function LiveMonitoringView() {
               )}
             </div>
             <div className="grid gap-1.5">
-              <label className="text-sm">Threshold: {threshold[0]}%</label>
+              <label className="text-sm">
+                Recognition Threshold: {threshold[0]}%
+              </label>
               <Slider
                 min={0}
                 max={100}
                 value={threshold}
                 onValueChange={setThreshold}
               />
+              <p className="text-xs text-muted-foreground">
+                Face recognition confidence threshold
+              </p>
             </div>
             <div className="grid gap-1.5">
-              <label className="text-sm">Processing FPS</label>
+              <label className="text-sm">
+                Image Quality Threshold: {qualityThreshold[0]}%
+              </label>
+              <Slider
+                min={0}
+                max={100}
+                value={qualityThreshold}
+                onValueChange={setQualityThreshold}
+              />
+              <p className="text-xs text-muted-foreground">
+                Images below this quality will be marked as low quality
+              </p>
+            </div>
+            <div className="grid gap-1.5">
+              <label className="text-sm">
+                Processing FPS (Face Recognition)
+              </label>
               <Input
                 value={fps}
                 onChange={(e) => setFps(e.target.value)}
                 placeholder="3"
               />
+              <p className="text-xs text-muted-foreground">
+                Lower values save CPU/GPU but detect faces less frequently
+              </p>
             </div>
             <div className="grid gap-1.5">
               <label className="text-sm">RTSP Transport</label>
@@ -578,6 +649,14 @@ export function LiveMonitoringView() {
                 onChange={(e) => setTimeoutMs(e.target.value)}
                 placeholder="5000000"
               />
+            </div>
+
+            <div className="p-3 bg-muted/50 rounded-md">
+              <p className="text-xs text-muted-foreground">
+                📹 <strong>Live Streaming:</strong> Use the "Live" view mode to
+                watch real-time video at 25 FPS. The "Snapshot" mode shows
+                processed frames with face detection overlays.
+              </p>
             </div>
           </div>
           <DialogFooter>

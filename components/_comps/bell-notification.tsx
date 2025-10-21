@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useState } from "react";
+import React, { useState, useEffect } from "react";
 import {
   Bell,
   BellRing,
@@ -41,18 +41,32 @@ export function BellNotification() {
 
   const recentAlerts = alerts.slice(0, 10); // Show only recent 10 alerts
 
-  const formatTime = (timestamp: string) => {
-    const date = new Date(timestamp);
-    const now = new Date();
-    const diff = now.getTime() - date.getTime();
-    const minutes = Math.floor(diff / 60000);
-    const hours = Math.floor(diff / 3600000);
-    const days = Math.floor(diff / 86400000);
+  // Move formatTime to a separate component to avoid hydration issues
+  const TimeAgo = ({ timestamp }: { timestamp: string }) => {
+    const [formattedTime, setFormattedTime] = useState<string>("...");
 
-    if (minutes < 1) return "Just now";
-    if (minutes < 60) return `${minutes}m ago`;
-    if (hours < 24) return `${hours}h ago`;
-    return `${days}d ago`;
+    useEffect(() => {
+      const updateTime = () => {
+        const date = new Date(timestamp);
+        const now = new Date();
+        const diff = now.getTime() - date.getTime();
+        const minutes = Math.floor(diff / 60000);
+        const hours = Math.floor(diff / 3600000);
+        const days = Math.floor(diff / 86400000);
+
+        if (minutes < 1) setFormattedTime("Just now");
+        else if (minutes < 60) setFormattedTime(`${minutes}m ago`);
+        else if (hours < 24) setFormattedTime(`${hours}h ago`);
+        else setFormattedTime(`${days}d ago`);
+      };
+
+      updateTime();
+      // Update every minute
+      const interval = setInterval(updateTime, 60000);
+      return () => clearInterval(interval);
+    }, [timestamp]);
+
+    return <span>{formattedTime}</span>;
   };
 
   const getSeverityColor = (severity: string) => {
@@ -253,7 +267,7 @@ export function BellNotification() {
                           {Math.round(alert.confidence)}%
                         </p>
                         <p className="text-xs text-muted-foreground">
-                          {formatTime(alert.timestamp)}
+                          <TimeAgo timestamp={alert.timestamp} />
                         </p>
                       </div>
 
