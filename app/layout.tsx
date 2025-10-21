@@ -5,6 +5,7 @@ import { GeistMono } from "geist/font/mono";
 import { Analytics } from "@vercel/analytics/next";
 import { Suspense } from "react";
 import { AlertProvider } from "@/contexts/AlertContext";
+import { QualityProvider } from "@/contexts/QualityContext";
 import { ThemeProvider } from "@/components/theme-provider";
 import { ClientComponents } from "@/components/_comps/client-components";
 import "./globals.css";
@@ -23,7 +24,7 @@ export default function RootLayout({
   children: React.ReactNode;
 }>) {
   return (
-    <html lang="en" className="dark">
+    <html lang="en" suppressHydrationWarning>
       <body
         className={`font-sans ${inter.variable} ${GeistMono.variable} min-h-dvh bg-background text-foreground antialiased`}
       >
@@ -34,9 +35,11 @@ export default function RootLayout({
           disableTransitionOnChange
         >
           <AlertProvider>
-            <Suspense fallback={null}>{children}</Suspense>
-            <ClientComponents />
-            <Analytics />
+            <QualityProvider>
+              <Suspense fallback={null}>{children}</Suspense>
+              <ClientComponents />
+              <Analytics />
+            </QualityProvider>
           </AlertProvider>
         </ThemeProvider>
       </body>

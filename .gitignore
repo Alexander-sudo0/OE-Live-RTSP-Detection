@@ -97,6 +97,10 @@ mizva/uploads/*
 !mizva/uploads/.gitkeep
 mizva/tmp_*
 
+# Video analysis generated data
+data/
+mizva/data/
+
 # OS generated files
 .DS_Store
 .DS_Store?

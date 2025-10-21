@@ -85,10 +85,29 @@ def init_db(conn: sqlite3.Connection) -> None:
               person_id INTEGER,
               person_name TEXT,
               extra TEXT,
+              quality_score REAL DEFAULT 1.0,
+              is_low_quality INTEGER DEFAULT 0,
+              full_image_path TEXT,
               FOREIGN KEY(camera_id) REFERENCES cameras(id)
             )
             """
         )
+        
+        # Add migration for quality fields if they don't exist
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN quality_score REAL DEFAULT 1.0")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+        
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN is_low_quality INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
+            
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN full_image_path TEXT")
+        except sqlite3.OperationalError:
+            pass  # Column already exists
 
 
 def _now_ms() -> int:
@@ -222,11 +241,22 @@ def insert_event(conn: sqlite3.Connection, ev: Dict[str, Any]) -> int:
     with DB_LOCK, conn:
         cur = conn.execute(
             """
-            INSERT INTO events(camera_id, ts, confidence, bbox, thumb_relpath, matched, person_id, person_name, extra)
-            VALUES(?,?,?,?,?,?,?,?,?)
+            INSERT INTO events(camera_id, ts, confidence, bbox, thumb_relpath, matched, person_id, person_name, extra, quality_score, is_low_quality, full_image_path)
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
-                ev["camera_id"], int(ev["ts"]), float(ev["confidence"]), json.dumps(ev["bbox"]), ev.get("thumb_relpath"), int(bool(ev.get("matched", False))), ev.get("person_id"), ev.get("person_name"), json.dumps(ev.get("extra") or {}),
+                ev["camera_id"], 
+                int(ev["ts"]), 
+                float(ev["confidence"]), 
+                json.dumps(ev["bbox"]), 
+                ev.get("thumb_relpath"), 
+                int(bool(ev.get("matched", False))), 
+                ev.get("person_id"), 
+                ev.get("person_name"), 
+                json.dumps(ev.get("extra") or {}),
+                float(ev.get("quality_score", 1.0)),
+                int(bool(ev.get("is_low_quality", False))),
+                ev.get("full_image_path")
             ),
         )
         lid = cur.lastrowid
@@ -237,7 +267,24 @@ def insert_event(conn: sqlite3.Connection, ev: Dict[str, Any]) -> int:
 def list_events(conn: sqlite3.Connection, limit: int = 100, matched: Optional[bool] = None) -> List[Dict[str, Any]]:
     with DB_LOCK:
         if matched is None:
-            rows = conn.execute("SELECT * FROM events ORDER BY ts DESC LIMIT ?", (limit,)).fetchall()
+            rows = conn.execute(
+                """
+                SELECT e.*, c.name as camera_name 
+                FROM events e 
+                LEFT JOIN cameras c ON e.camera_id = c.id 
+                ORDER BY e.ts DESC LIMIT ?
+                """, 
+                (limit,)
+            ).fetchall()
         else:
-            rows = conn.execute("SELECT * FROM events WHERE matched=? ORDER BY ts DESC LIMIT ?", (1 if matched else 0, limit)).fetchall()
+            rows = conn.execute(
+                """
+                SELECT e.*, c.name as camera_name 
+                FROM events e 
+                LEFT JOIN cameras c ON e.camera_id = c.id 
+                WHERE e.matched=? 
+                ORDER BY e.ts DESC LIMIT ?
+                """, 
+                (1 if matched else 0, limit)
+            ).fetchall()
     return [dict(r) for r in rows]
