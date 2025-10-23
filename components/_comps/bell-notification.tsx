@@ -39,7 +39,12 @@ export function BellNotification() {
 
   const [open, setOpen] = useState(false);
 
-  const recentAlerts = alerts.slice(0, 10); // Show only recent 10 alerts
+  // ONLY show watchlist matches in bell notification
+  const matchedAlerts = alerts.filter((alert) => alert.is_match);
+  const recentAlerts = matchedAlerts.slice(0, 10); // Show only recent 10 matched alerts
+  const matchedUnreadCount = matchedAlerts.filter(
+    (alert) => alert.status === "new"
+  ).length;
 
   // Move formatTime to a separate component to avoid hydration issues
   const TimeAgo = ({ timestamp }: { timestamp: string }) => {
@@ -106,7 +111,7 @@ export function BellNotification() {
             <Bell className="h-5 w-5 text-muted-foreground hover:text-foreground transition-colors duration-200" />
           )}
 
-          {unreadCount > 0 && (
+          {matchedUnreadCount > 0 && (
             <Badge
               variant="destructive"
               className={cn(
@@ -114,7 +119,7 @@ export function BellNotification() {
                 isRinging && "animate-pulse scale-110"
               )}
             >
-              {unreadCount > 99 ? "99+" : unreadCount}
+              {matchedUnreadCount > 99 ? "99+" : matchedUnreadCount}
             </Badge>
           )}
         </Button>
@@ -128,10 +133,10 @@ export function BellNotification() {
         <div className="flex items-center justify-between p-4 border-b border-border/50">
           <div className="flex items-center gap-2">
             <Bell className="h-4 w-4 text-primary" />
-            <h3 className="font-semibold text-foreground">Alerts</h3>
-            {unreadCount > 0 && (
+            <h3 className="font-semibold text-foreground">Watchlist Matches</h3>
+            {matchedUnreadCount > 0 && (
               <Badge variant="destructive" className="text-xs">
-                {unreadCount} new
+                {matchedUnreadCount} new
               </Badge>
             )}
           </div>
@@ -153,7 +158,7 @@ export function BellNotification() {
             </Button>
 
             {/* Mark All Read Button */}
-            {unreadCount > 0 && (
+            {matchedUnreadCount > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -166,7 +171,7 @@ export function BellNotification() {
             )}
 
             {/* Clear All Button */}
-            {alerts.length > 0 && (
+            {matchedAlerts.length > 0 && (
               <Button
                 variant="ghost"
                 size="sm"
@@ -203,7 +208,7 @@ export function BellNotification() {
           {recentAlerts.length === 0 ? (
             <div className="text-center py-8 text-muted-foreground">
               <Bell className="h-8 w-8 mx-auto mb-2 opacity-50" />
-              <p className="text-sm">No alerts yet</p>
+              <p className="text-sm">No watchlist matches yet</p>
             </div>
           ) : (
             <div className="p-2">
@@ -252,15 +257,9 @@ export function BellNotification() {
                               : "text-muted-foreground"
                           )}
                         >
-                          {alert.is_match ? (
-                            <span className="text-red-600 dark:text-red-400">
-                              ⚠️ {alert.person_name || "Unknown Person"}
-                            </span>
-                          ) : (
-                            <span className="text-green-600 dark:text-green-400">
-                              ✅ {alert.person_name || "Person Detected"}
-                            </span>
-                          )}
+                          <span className="text-red-600 dark:text-red-400">
+                            ⚠️ {alert.person_name || "Unknown Person"}
+                          </span>
                         </p>
                         <p className="text-xs text-muted-foreground truncate">
                           {alert.camera_name || alert.camera_id} •{" "}
@@ -303,7 +302,7 @@ export function BellNotification() {
         </ScrollArea>
 
         {/* Footer */}
-        {alerts.length > 10 && (
+        {matchedAlerts.length > 10 && (
           <div className="border-t border-border/50 p-3">
             <Button
               variant="ghost"
@@ -311,7 +310,7 @@ export function BellNotification() {
               className="w-full text-sm text-muted-foreground hover:text-foreground"
               onClick={() => setOpen(false)}
             >
-              View all alerts ({alerts.length})
+              View all matches ({matchedAlerts.length})
             </Button>
           </div>
         )}

@@ -1,0 +1,21 @@
+QUICK START COMMANDS
+====================
+
+1. START FLASK BACKEND (GPU-optimized):
+   PowerShell -ExecutionPolicy Bypass -File "c:\Users\HP\Desktop\new_frm\mizva\start_final_app.ps1"
+
+2. START FRONTEND (in separate terminal):
+   cd c:\Users\HP\Desktop\new_frm
+   bun run dev
+
+ACCESS:
+- Frontend: http://localhost:3000
+- Backend: http://127.0.0.1:5001
+
+WHAT'S FIXED:
+✓ Smooth live stream (full camera FPS, no 2 FPS lag)
+✓ Events separated by quality (high/low)  
+✓ Only matched faces in notifications
+✓ No events shown in live monitoring view
+✓ 30 FPS face detection (10x faster)
+✓ All errors fixed

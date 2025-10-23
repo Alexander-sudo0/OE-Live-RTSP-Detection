@@ -23,6 +23,7 @@ import {
   Filter,
   Info,
   Sliders,
+  Database,
 } from "lucide-react";
 import { MIZVA_URL } from "@/backend_integration/api_mizva";
 import {
@@ -132,7 +133,7 @@ function QualityEventsTable({
     };
 
     fetchEvents();
-    const interval = setInterval(fetchEvents, 6000); // Refresh every 6 seconds
+    const interval = setInterval(fetchEvents, 3000); // Refresh every 3 seconds for faster updates
     return () => clearInterval(interval);
   }, [isLowQuality, cameraId, limit, qualityThreshold]);
 
@@ -291,7 +292,7 @@ export function EventsTabbedView() {
     };
 
     fetchCounts();
-    const interval = setInterval(fetchCounts, 10000); // Update counts every 10 seconds
+    const interval = setInterval(fetchCounts, 5000); // Update counts every 5 seconds for faster updates
     return () => clearInterval(interval);
   }, [qualityThreshold]);
 

@@ -34,6 +34,22 @@ except ImportError:
 # Global quality threshold (default 0.4)
 QUALITY_THRESHOLD = 0.4
 
+def convert_to_json_serializable(obj):
+    """Convert numpy types and other non-JSON-serializable types to Python native types."""
+    if isinstance(obj, (np.integer, np.int64, np.int32)):
+        return int(obj)
+    elif isinstance(obj, (np.floating, np.float64, np.float32)):
+        return float(obj)
+    elif isinstance(obj, (np.bool_, bool)):
+        return bool(obj)
+    elif isinstance(obj, np.ndarray):
+        return obj.tolist()
+    elif isinstance(obj, dict):
+        return {k: convert_to_json_serializable(v) for k, v in obj.items()}
+    elif isinstance(obj, (list, tuple)):
+        return [convert_to_json_serializable(item) for item in obj]
+    return obj
+
 def calculate_image_quality(image):
     """
     Calculate image quality using variance of Laplacian (blur detection) on face crop.
@@ -54,37 +70,43 @@ def calculate_image_quality(image):
         if gray.shape[0] < 32 or gray.shape[1] < 32:
             gray = cv2.resize(gray, (64, 64))
         
-        # Calculate variance of Laplacian
+        # Calculate variance of Laplacian (fast blur detection)
         laplacian = cv2.Laplacian(gray, cv2.CV_64F)
         laplacian_var = laplacian.var()
         
-        print(f"Quality calculation - Laplacian variance: {laplacian_var:.2f}")
-        
         # Improved normalization based on face crop analysis
-        # Face crops typically have lower variance than full images
         # Sharp faces: 50-200, Blurry faces: 5-30, Very blurry: <10
         if laplacian_var > 100:
-            normalized_score = 0.9 + (min(laplacian_var - 100, 200) / 200) * 0.1  # 0.9-1.0 for very sharp
+            normalized_score = 0.9 + (min(laplacian_var - 100, 200) / 200) * 0.1
         elif laplacian_var > 30:
-            normalized_score = 0.5 + ((laplacian_var - 30) / 70) * 0.4  # 0.5-0.9 for good quality
+            normalized_score = 0.5 + ((laplacian_var - 30) / 70) * 0.4
         elif laplacian_var > 10:
-            normalized_score = 0.2 + ((laplacian_var - 10) / 20) * 0.3  # 0.2-0.5 for medium quality
+            normalized_score = 0.2 + ((laplacian_var - 10) / 20) * 0.3
         else:
-            normalized_score = laplacian_var / 10 * 0.2  # 0.0-0.2 for poor quality
+            normalized_score = laplacian_var / 10 * 0.2
         
         quality_score = max(0.0, min(1.0, normalized_score))
-        print(f"Final quality score: {quality_score:.3f} (var: {laplacian_var:.1f})")
-        
         return quality_score
         
     except Exception as e:
         print(f"Error calculating image quality: {e}")
         return 0.5  # Default to medium quality on error
 try:
-    # Prefer direct import; falls back to shim if needed
+    # Add local insightface to Python path
+    import sys
+    import os
+    sys.path.insert(0, os.path.join(os.path.dirname(__file__), 'insightface', 'python-package'))
     from insightface.app import FaceAnalysis  # type: ignore
-except Exception:
-    from mizva.mizva.app import FaceAnalysis  # type: ignore
+    print("✅ Successfully imported InsightFace from local installation")
+except Exception as e:
+    print(f"⚠️ Failed to import InsightFace: {e}")
+    # Try fallback import
+    try:
+        from mizva.app import FaceAnalysis  # type: ignore
+        print("✅ Successfully imported FaceAnalysis from mizva.app")
+    except Exception as e2:
+        print(f"❌ All import attempts failed: {e2}")
+        raise ImportError("Could not import FaceAnalysis from any source")
 import uuid
 
 app = Flask(__name__)
@@ -115,11 +137,24 @@ def serve_data(subpath):
 JOBS = {}
 
 # initialize model once - WITH GPU SUPPORT!
-print("Initializing FaceAnalysis with GPU acceleration...")
+print("Initializing FaceAnalysis...")
 fa = FaceAnalysis(allowed_modules=['detection','recognition'])
 try:
-    fa.prepare(ctx_id=0, det_size=(640,640))  # ctx_id=0 enables GPU
-    print("✅ FaceAnalysis initialized with GPU acceleration (ctx_id=0)")
+    # Try GPU first (ctx_id=0), fall back to CPU (ctx_id=-1) if it fails
+    try:
+        # Use larger detection size for better GPU utilization (GPU thrives on larger batches)
+        fa.prepare(ctx_id=0, det_size=(640,640))  # ctx_id=0 enables GPU
+        print("✅ FaceAnalysis initialized with GPU acceleration (ctx_id=0)")
+        print(f"   Detection size: 640x640 (optimized for GPU)")
+        try:
+            print(f"   Available providers: {fa.rec_model.session.get_providers()}")
+        except:
+            print("   GPU providers: CUDAExecutionProvider enabled")
+    except Exception as gpu_err:
+        print(f"⚠️ GPU initialization failed: {gpu_err}")
+        print("   Falling back to CPU execution...")
+        fa.prepare(ctx_id=-1, det_size=(640,640))  # ctx_id=-1 uses CPU
+        print("✅ FaceAnalysis initialized with CPU execution (ctx_id=-1)")
 except Exception as e:
     print(f"⚠️ GPU initialization failed: {e}")
     print("Falling back to CPU...")
@@ -140,6 +175,122 @@ def _face_embedding(img: np.ndarray):
         return None, None
     face = faces[0]
     return _normalize(face.embedding), face.bbox.astype(int).tolist()
+
+def _extract_face_features(face, face_crop_img=None):
+    """
+    Extract basic facial features - SIMPLIFIED for faster detection.
+    Only extracts face coordinates, size, and quality metrics.
+    NO age/gender extraction to maximize detection speed.
+    """
+    features = {}
+    
+    try:
+        # Basic face metrics from bbox
+        bbox = face.bbox.astype(int)
+        x1, y1, x2, y2 = bbox
+        width = x2 - x1
+        height = y2 - y1
+        size = width * height
+        
+        features['face_coordinates'] = {
+            'left': int(x1),
+            'top': int(y1), 
+            'right': int(x2),
+            'bottom': int(y2)
+        }
+        
+        features['face_metrics'] = {
+            'width': int(width),
+            'height': int(height),
+            'size': int(size),
+            'sharpness': None,
+            'brightness': None
+        }
+        
+        # NO age/gender extraction for speed
+        features['facial_features'] = {
+            'age': {
+                'estimate': None,
+                'confidence': 0.0
+            },
+            'gender': {
+                'name': None,
+                'confidence': 0.0
+            },
+            'glasses': {
+                'has_glasses': False,
+                'confidence': 0.0
+            },
+            'beard': {
+                'has_beard': False,
+                'confidence': 0.0
+            },
+            'liveness': None,
+            'emotions': {}
+        }
+        
+        # Calculate only basic quality metrics if crop available
+        if face_crop_img is not None:
+            # Calculate brightness (fast)
+            if len(face_crop_img.shape) == 3:
+                gray_crop = cv2.cvtColor(face_crop_img, cv2.COLOR_BGR2GRAY)
+            else:
+                gray_crop = face_crop_img.copy()
+            brightness = np.mean(gray_crop) / 255.0
+            
+            # Calculate sharpness (fast)
+            laplacian = cv2.Laplacian(gray_crop, cv2.CV_64F)
+            sharpness = laplacian.var()
+            
+            features['face_metrics']['sharpness'] = float(sharpness)
+            features['face_metrics']['brightness'] = float(brightness)
+        
+        # Detection quality assessment
+        detection_confidence = float(face.det_score) if hasattr(face, 'det_score') else 0.9
+        
+        features['recognition_details'] = {
+            'detection_confidence': detection_confidence,
+            'detection_threshold': 0.6,
+            'recognition_threshold': 0.6
+        }
+        
+        # Initialize tracking info
+        features['tracking'] = {
+            'duration': 0.0,
+            'confidence': 0.0,
+            'is_new_track': True
+        }
+        
+        # Initialize classification
+        features['classification'] = {
+            'event_type': 'detection',
+            'alert_level': 'info',
+            'is_blacklisted': False,
+            'is_whitelisted': False
+        }
+        
+        # Processing metadata
+        features['processing'] = {
+            'time_ms': None,
+            'fps': None,
+            'model_version': 'insightface-buffalo_l'
+        }
+        
+    except Exception as e:
+        print(f"Error extracting face features: {e}")
+        # Return minimal feature set on error
+        bbox = face.bbox.astype(int)
+        features = {
+            'face_coordinates': {'left': int(bbox[0]), 'top': int(bbox[1]), 'right': int(bbox[2]), 'bottom': int(bbox[3])},
+            'face_metrics': {'width': int(bbox[2]-bbox[0]), 'height': int(bbox[3]-bbox[1]), 'size': int((bbox[2]-bbox[0])*(bbox[3]-bbox[1]))},
+            'facial_features': {'age': {'estimate': None, 'confidence': 0.0}, 'gender': {'name': None, 'confidence': 0.0}},
+            'recognition_details': {},
+            'tracking': {},
+            'classification': {},
+            'processing': {'model_version': 'insightface-buffalo_l'}
+        }
+    
+    return features
 
 def _save_thumb(frame: np.ndarray, bbox, name_prefix: str) -> str:
     x1, y1, x2, y2 = bbox
@@ -571,7 +722,7 @@ def api_pic_to_video():
 class RtspWorker:
     def __init__(self, cam_id: str, url: str, 
                  known_emb: Optional[np.ndarray] = None,
-                 threshold: float = 0.6, target_fps: float = 3.0, transport: str = 'tcp', timeout_ms: int = 5000000,
+                 threshold: float = 0.6, target_fps: float = 15.0, transport: str = 'tcp', timeout_ms: int = 5000000,
                  mode: str = 'watchlist',
                  gallery: Optional[list] = None):
         self.cam_id = cam_id
@@ -580,7 +731,7 @@ class RtspWorker:
         self.known = known_emb.astype(np.float32) if known_emb is not None else None
         self.threshold = float(threshold)
         self.target_dt = 1.0 / max(0.1, float(target_fps))
-        self.stream_dt = 1.0 / 25.0  # 25 FPS for live streaming
+        self.stream_dt = 1.0 / 30.0  # 30 FPS for live streaming (GPU-optimized)
         self.transport = transport if transport in ('tcp', 'udp') else 'tcp'
         self.timeout_ms = int(timeout_ms)
         # gallery: list of tuples (person_id, person_name, embedding np.ndarray)
@@ -603,6 +754,7 @@ class RtspWorker:
         self._last_jpeg: Optional[bytes] = None
         self._last_emit_ts = 0.0
         self._last_stream_ts = 0.0  # For live streaming frame rate control
+        self._stream_frame_counter = 0  # Counter for frame skipping
 
     def start(self):
         if self.thread and self.thread.is_alive():
@@ -659,9 +811,37 @@ class RtspWorker:
     def _open_variants(self):
         """Try multiple URL variants and return an opened VideoCapture or None."""
         import os as _os
-        # Set global capture options for FFMPEG (affects subsequent opens)
-        # stimeout is in microseconds per FFmpeg; OpenCV expects integer.
-        _os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = f"rtsp_transport;{self.transport}|stimeout;{self.timeout_ms}"
+        # Set global capture options for FFMPEG
+        # Try hardware acceleration if available, fall back to software decoding
+        try:
+            # Check if CUDA is available by testing for cudart
+            import ctypes
+            ctypes.CDLL('cudart64_12.dll')
+            # CUDA available - use hardware acceleration with optimized settings
+            _os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
+                f"rtsp_transport;{self.transport}|"
+                f"stimeout;{self.timeout_ms}|"
+                "hwaccel;cuda|"
+                "hwaccel_output_format;cuda|"  # Keep frames in GPU memory
+                "c:v;h264_cuvid|"  # H.264 GPU decoder
+                "resize;1920x1080|"  # Higher resolution for better quality
+                "gpu;0|"  # Use GPU 0
+                "surfaces;16|"  # More decode surfaces for smoother playback
+                "flags;low_delay"
+            )
+            print("🚀 Using NVIDIA CUDA hardware acceleration for video decoding (optimized)")
+        except:
+            # CUDA not available - use optimized software decoding
+            _os.environ['OPENCV_FFMPEG_CAPTURE_OPTIONS'] = (
+                f"rtsp_transport;{self.transport}|"
+                f"stimeout;{self.timeout_ms}|"
+                "fflags;nobuffer|"  # No buffering for low latency
+                "flags;low_delay|"  # Low delay mode
+                "threads;4|"  # Use 4 threads for software decoding
+                "probesize;32768|"  # Smaller probe size for faster startup
+                "analyzeduration;500000"  # Shorter analysis for faster startup
+            )
+            print("⚠️ CUDA not available - using optimized CPU decoding")
 
         variants = []
         # Prefer explicit FFMPEG backend
@@ -677,6 +857,14 @@ class RtspWorker:
             try:
                 c = cv2.VideoCapture(u, cv2.CAP_FFMPEG)
                 if c.isOpened():
+                    # Optimize buffer and resolution settings for high FPS with GPU
+                    c.set(cv2.CAP_PROP_BUFFERSIZE, 1)  # Minimal buffer for lowest latency
+                    c.set(cv2.CAP_PROP_FPS, 30)  # Request 30 FPS from camera
+                    # Higher resolution for GPU processing
+                    c.set(cv2.CAP_PROP_FRAME_WIDTH, 1920)
+                    c.set(cv2.CAP_PROP_FRAME_HEIGHT, 1080)
+                    # Force H.264 codec (more compatible than HEVC)
+                    c.set(cv2.CAP_PROP_FOURCC, cv2.VideoWriter_fourcc('H','2','6','4'))
                     return c, tag
                 else:
                     c.release()
@@ -708,12 +896,29 @@ class RtspWorker:
 
                     self.last_seen = now
                     
-                    # Update JPEG for live streaming at higher frequency (25 FPS)
+                    # Increment frame counter
+                    self._stream_frame_counter += 1
+                    
+                    # Update JPEG for live streaming - process EVERY frame for 30 FPS streaming
+                    # GPU can handle this easily
                     if now - self._last_stream_ts >= self.stream_dt:
                         try:
-                            # Create a copy for streaming (without annotations initially)
-                            stream_frame = frame.copy()
-                            ok2, buf = cv2.imencode('.jpg', stream_frame, [cv2.IMWRITE_JPEG_QUALITY, 85])
+                            # Downscale frame for faster streaming (720p optimal for GPU)
+                            h, w = frame.shape[:2]
+                            if w > 1280:  # Only downscale if larger than 1280px
+                                scale = 1280 / w
+                                new_w = 1280
+                                new_h = int(h * scale)
+                                stream_frame = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_LINEAR)
+                            else:
+                                stream_frame = frame
+                            
+                            # Fast JPEG encoding with higher quality for GPU
+                            ok2, buf = cv2.imencode('.jpg', stream_frame, [
+                                cv2.IMWRITE_JPEG_QUALITY, 85,  # Higher quality with GPU
+                                cv2.IMWRITE_JPEG_OPTIMIZE, 0,  # Disable optimization for speed
+                                cv2.IMWRITE_JPEG_PROGRESSIVE, 0  # Disable progressive
+                            ])
                             if ok2:
                                 self._last_jpeg = buf.tobytes()
                                 self._last_stream_ts = now
@@ -722,14 +927,20 @@ class RtspWorker:
                     
                     # Process faces at lower frequency (configurable FPS for recognition)
                     if now - last_ts < self.target_dt:
-                        time.sleep(0.001)
+                        # Don't sleep here - let the stream continue at full speed
                         continue
                     last_ts = now
 
                     self.frame_idx += 1
+                    
+                    # Record processing start time for performance metrics
+                    processing_start = time.time()
                     faces = fa.get(frame)
+                    processing_time_ms = (time.time() - processing_start) * 1000
+                    
                     evts = []
                     best_sim = None
+                    
                     for f in faces:
                         emb = f.embedding
                         emb = emb / (np.linalg.norm(emb) + 1e-10)
@@ -737,6 +948,8 @@ class RtspWorker:
                         sim = 0.0
                         person_id = None
                         person_name = None
+                        
+                        # Recognition logic
                         if self.mode == 'single' and self.known is not None:
                             sim = float(np.dot(self.known, emb))
                             matched = sim >= self.threshold
@@ -753,17 +966,37 @@ class RtspWorker:
                                     matched = True
                                     person_id = best[1]
                                     person_name = best[2]
+                        
                         if best_sim is None or sim > best_sim:
                             best_sim = sim
-                        # Always store events (matched and unmatched)
+                            
+                        # Extract comprehensive face features
                         bbox = f.bbox.astype(int).tolist()
-                        rel = _save_thumb(frame, bbox, f"rtsp_{self.cam_id}_{self.frame_idx}")
+                        x1, y1, x2, y2 = bbox
+                        
+                        # Ensure bbox is within frame boundaries
+                        h, w = frame.shape[:2]
+                        x1 = max(0, min(x1, w-1))
+                        y1 = max(0, min(y1, h-1))
+                        x2 = max(x1+1, min(x2, w))
+                        y2 = max(y1+1, min(y2, h))
+                        bbox = [x1, y1, x2, y2]
+                        
+                        face_crop = frame[y1:y2, x1:x2]
+                        
+                        # Validate face crop is not empty
+                        if face_crop is None or face_crop.size == 0:
+                            continue  # Skip this face if crop failed
+                        
+                        # Extract detailed facial features and metadata
+                        features = _extract_face_features(f, face_crop)
                         
                         # Calculate image quality for the face crop
-                        x1, y1, x2, y2 = bbox
-                        face_crop = frame[y1:y2, x1:x2]
                         quality_score = calculate_image_quality(face_crop)
                         is_low_quality = quality_score < QUALITY_THRESHOLD
+                        
+                        # Save thumbnail
+                        rel = _save_thumb(frame, bbox, f"rtsp_{self.cam_id}_{self.frame_idx}")
                         
                         # Save full frame image
                         full_image_path = None
@@ -776,11 +1009,30 @@ class RtspWorker:
                             print(f"Failed to save full image: {e}")
                             full_image_path = None
                         
-                        # Insert event into DB with cooldown (1s)
+                        # Enhance features with recognition results
+                        features['recognition_details']['similarity_score'] = sim
+                        features['recognition_details']['recognition_threshold'] = self.threshold
+                        features['processing']['time_ms'] = processing_time_ms
+                        features['processing']['fps'] = 1.0 / self.target_dt if self.target_dt > 0 else 0.0
+                        
+                        # Classification based on recognition results
+                        if matched:
+                            features['classification']['event_type'] = 'recognized'
+                            features['classification']['alert_level'] = 'medium' if sim >= 0.8 else 'low'
+                        else:
+                            features['classification']['event_type'] = 'unknown'
+                            features['classification']['alert_level'] = 'info'
+                        
+                        # Add tracking info (basic implementation)
+                        track_id = f"track_{self.cam_id}_{self.frame_idx}"
+                        features['tracking']['is_new_track'] = True  # For now, each detection is new
+                        
+                        # Insert event into DB with cooldown (1s) and enhanced metadata
                         now_ms = int(self.last_seen * 1000)
                         if (self.last_seen - self._last_emit_ts) >= 1.0:
                             try:
-                                dbm.insert_event(DB_CONN, {
+                                # Prepare enhanced event data structure
+                                event_data = {
                                     'camera_id': self.cam_id,
                                     'ts': now_ms,
                                     'confidence': sim,
@@ -789,29 +1041,88 @@ class RtspWorker:
                                     'matched': matched,
                                     'person_id': person_id,
                                     'person_name': person_name,
-                                    'extra': {'mode': self.mode, 'quality_score': quality_score},
                                     'quality_score': quality_score,
                                     'is_low_quality': is_low_quality,
-                                    'full_image_path': full_image_path
-                                })
+                                    'full_image_path': full_image_path,
+                                    
+                                    # Enhanced metadata from features
+                                    'track_id': track_id,
+                                    'frame_number': self.frame_idx,
+                                    **features  # Merge all extracted features
+                                }
+                                
+                                dbm.insert_event(DB_CONN, event_data)
                                 self._last_emit_ts = self.last_seen
+                                      
                             except Exception as e:
-                                print(f"Failed to insert event: {e}")
-                                pass
-                        # For live UI, publish only matched events, but include matched flag
-                        if matched:
-                            evt = {
-                                'id': self.cam_id,
-                                'frame': self.frame_idx,
-                                'timeSec': round(self.last_seen, 3),
-                                'confidence': round(sim, 4),
-                                'bbox': bbox,
-                                'thumb_relpath': rel,
-                                'matched': True,
-                                'person_id': person_id,
-                                'person_name': person_name,
-                            }
-                            evts.append(evt)
+                                print(f"Failed to insert enhanced event: {e}")
+                                # Fallback to basic event insertion
+                                try:
+                                    dbm.insert_event(DB_CONN, {
+                                        'camera_id': self.cam_id,
+                                        'ts': now_ms,
+                                        'confidence': sim,
+                                        'bbox': bbox,
+                                        'thumb_relpath': rel,
+                                        'matched': matched,
+                                        'person_id': person_id,
+                                        'person_name': person_name,
+                                        'extra': {'mode': self.mode, 'quality_score': quality_score},
+                                        'quality_score': quality_score,
+                                        'is_low_quality': is_low_quality,
+                                        'full_image_path': full_image_path
+                                    })
+                                except Exception as e2:
+                                    print(f"Fallback event insertion also failed: {e2}")
+                                    pass
+                        # For live UI, publish all detection events with enhanced metadata
+                        # Publish both matched and unmatched events for live monitoring
+                        evt = {
+                            # Core identification
+                            'id': self.cam_id,
+                            'frame': self.frame_idx,
+                            'timeSec': round(self.last_seen, 3),
+                            'timestamp': now_ms,
+                            'confidence': round(sim, 4),
+                            'bbox': bbox,
+                            'thumb_relpath': rel,
+                            'matched': matched,
+                            'person_id': person_id,
+                            'person_name': person_name if matched else 'Unknown',
+                            
+                            # Enhanced metadata for rich UI display
+                            'quality_score': round(quality_score, 3),
+                            'is_low_quality': is_low_quality,
+                            'track_id': track_id,
+                            
+                            # Face metrics for display
+                            'face_width': features['face_metrics']['width'],
+                            'face_height': features['face_metrics']['height'],
+                            'face_size': features['face_metrics']['size'],
+                            
+                            # Facial features for UI display
+                            'age_estimate': features['facial_features']['age']['estimate'],
+                            'gender': features['facial_features']['gender']['name'],
+                            'age_confidence': features['facial_features']['age']['confidence'],
+                            'gender_confidence': features['facial_features']['gender']['confidence'],
+                            
+                            # Recognition details
+                            'similarity_score': round(sim, 4),
+                            'recognition_threshold': self.threshold,
+                            
+                            # Event classification
+                            'event_type': features['classification']['event_type'],
+                            'alert_level': features['classification']['alert_level'],
+                            
+                            # Processing metrics
+                            'processing_time_ms': round(processing_time_ms, 2),
+                            'model_version': features['processing']['model_version'],
+                            
+                            # Image quality details
+                            'sharpness': features['face_metrics'].get('sharpness'),
+                            'brightness': features['face_metrics'].get('brightness')
+                        }
+                        evts.append(evt)
                     # annotate frame for snapshot with detection results
                     try:
                         # Create annotated frame for streaming
@@ -873,7 +1184,7 @@ def api_rtsp_start():
       - url: rtsp url (required)
       - known: image file containing the known face (required for now)
       - threshold: float (optional, default 0.6)
-      - fps: float target processing fps (optional, default 3.0)
+      - fps: float target processing fps (optional, default 15.0)
     """
     cam_id = request.form.get('id') or f"cam-{uuid.uuid4().hex[:8]}"
     url = request.form.get('url')
@@ -882,7 +1193,7 @@ def api_rtsp_start():
         return jsonify({'error': 'url is required'}), 400
     known_fs = request.files.get('known')
     thr = _parse_float(request.form.get('threshold'), 0.6)
-    fps = _parse_float(request.form.get('fps'), 3.0)
+    fps = _parse_float(request.form.get('fps'), 15.0)  # Updated default: 15.0 FPS (GPU-optimized)
     transport = request.form.get('transport', 'tcp').lower()
     timeout_ms = request.form.get('timeout_ms')
     try:
@@ -983,14 +1294,17 @@ def api_rtsp_status(cam_id: str):
     if not w:
         return jsonify({'id': cam_id, 'status': 'not_found'}), 404
     running = bool(w.thread and w.thread.is_alive())
-    return jsonify({
+    status_data = {
         'id': cam_id,
         'status': 'running' if running else 'stopped',
         'last_seen': w.last_seen,
         'matches_count': w.matches_count,
         'last_error': w.last_error,
         'last_confidence': w.last_confidence,
-    })
+    }
+    # Convert to JSON-serializable format
+    status_data = convert_to_json_serializable(status_data)
+    return jsonify(status_data)
 
 
 @app.route('/api/rtsp/events/<cam_id>')
@@ -1010,7 +1324,9 @@ def api_rtsp_events(cam_id: str):
                     # heartbeat
                     yield ":keepalive\n\n"
                 else:
-                    payload = json.dumps(evt)
+                    # Convert to JSON-serializable format
+                    evt_clean = convert_to_json_serializable(evt)
+                    payload = json.dumps(evt_clean)
                     yield f"event: rtsp_match\n" + f"data: {payload}\n\n"
         except GeneratorExit:
             pass
@@ -1040,33 +1356,29 @@ def api_rtsp_snapshot(cam_id: str):
 def api_rtsp_stream(cam_id: str):
     """
     Live MJPEG video stream endpoint for real-time monitoring
-    Returns continuous stream of JPEG frames at high frame rate (20-30 FPS)
+    Optimized for 25-30 FPS with GPU acceleration
     """
     w = RTSP_WORKERS.get(cam_id)
     if not w:
         return jsonify({'error': 'not_found'}), 404
     
     def generate_frames():
-        last_frame_time = 0
-        target_interval = 1.0 / 25.0  # 25 FPS target
+        last_jpg = None
+        frame_count = 0
         
         while True:
             try:
-                current_time = time.time()
-                
-                # Throttle to maintain consistent frame rate
-                if current_time - last_frame_time < target_interval:
-                    time.sleep(0.01)  # Small sleep to prevent busy waiting
-                    continue
-                
                 jpg = w.snapshot()
-                if jpg:
-                    last_frame_time = current_time
+                
+                # Only send new frames to avoid sending duplicates
+                if jpg and jpg != last_jpg:
+                    last_jpg = jpg
+                    frame_count += 1
                     yield (b'--frame\r\n'
                            b'Content-Type: image/jpeg\r\n\r\n' + jpg + b'\r\n')
                 else:
-                    # If no frame available, wait a bit
-                    time.sleep(0.1)
+                    # No new frame, minimal sleep
+                    time.sleep(0.005)  # 5ms sleep for efficiency
                     
             except GeneratorExit:
                 break
@@ -1081,7 +1393,8 @@ def api_rtsp_stream(cam_id: str):
             'Cache-Control': 'no-cache, no-store, must-revalidate',
             'Pragma': 'no-cache',
             'Expires': '0',
-            'Connection': 'close'
+            'Connection': 'close',
+            'X-Accel-Buffering': 'no'  # Disable nginx buffering if behind proxy
         }
     )
 
@@ -1189,6 +1502,71 @@ def api_cameras_cleanup():
         return jsonify({'error': str(e)}), 500
 
 
+@app.route('/api/cameras/reload', methods=['POST'])
+def api_cameras_reload():
+    """Reload all enabled cameras from database"""
+    try:
+        cameras = dbm.list_cameras(DB_CONN)
+        reloaded = []
+        failed = []
+        
+        for cam in cameras:
+            if cam.get('enabled') != 1:
+                continue
+                
+            cam_id = cam['id']
+            
+            # Stop existing worker if running
+            if cam_id in RTSP_WORKERS:
+                try:
+                    RTSP_WORKERS[cam_id].stop()
+                    del RTSP_WORKERS[cam_id]
+                except Exception:
+                    pass
+            
+            # Get mode and setup
+            mode = cam.get('mode', 'watchlist')
+            gallery = []
+            emb = None
+            
+            if mode == 'watchlist':
+                wl = dbm.get_watchlist(DB_CONN)
+                for p in wl:
+                    for vec in p.get('embeddings', []):
+                        try:
+                            arr = np.array(vec, dtype=np.float32)
+                            gallery.append((p['person_id'], p['person_name'], arr))
+                        except Exception:
+                            continue
+            
+            # Start worker
+            try:
+                w = RtspWorker(
+                    cam_id, 
+                    cam['url'], 
+                    emb,
+                    threshold=cam.get('threshold', 0.6),
+                    target_fps=cam.get('fps', 15.0),
+                    transport=cam.get('transport', 'tcp'),
+                    timeout_ms=5000000,
+                    mode=mode,
+                    gallery=gallery
+                )
+                RTSP_WORKERS[cam_id] = w
+                w.start()
+                reloaded.append(cam_id)
+            except Exception as e:
+                failed.append({'id': cam_id, 'error': str(e)})
+        
+        return jsonify({
+            'reloaded': reloaded,
+            'failed': failed,
+            'count': len(reloaded)
+        })
+    except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+
 @app.route('/api/cameras/<cam_id>', methods=['DELETE'])
 def api_camera_delete(cam_id):
     """Delete a specific camera"""
@@ -1227,6 +1605,240 @@ def api_events():
         if rel:
             r['thumb_url'] = f"/data/{rel}"
     return jsonify({'events': rows})
+
+
+@app.route('/api/events/enhanced', methods=['GET'])
+def api_events_enhanced():
+    """
+    Enhanced events API with comprehensive metadata filtering and rich response format.
+    Similar to OPTIEXACTA system functionality.
+    """
+    try:
+        # Parse query parameters with defaults
+        limit = int(request.args.get('limit', '100'))
+        page = int(request.args.get('page', '1'))
+        offset = (page - 1) * limit
+        
+        # Time filters
+        start_date = request.args.get('start_date')  # ISO format
+        end_date = request.args.get('end_date')
+        last_hours = request.args.get('last_hours')
+        
+        # Recognition filters
+        matched_only = request.args.get('matched_only') == 'true'
+        confidence_min = float(request.args.get('confidence_min', '0.0'))
+        confidence_max = float(request.args.get('confidence_max', '1.0'))
+        person_name = request.args.get('person_name')
+        
+        # Quality filters
+        min_quality = float(request.args.get('min_quality', '0.0'))
+        exclude_low_quality = request.args.get('exclude_low_quality') == 'true'
+        min_face_size = int(request.args.get('min_face_size', '0'))
+        
+        # Feature filters
+        age_min = request.args.get('age_min')
+        age_max = request.args.get('age_max')
+        gender = request.args.get('gender')
+        
+        # Location filters
+        camera_ids = request.args.getlist('camera_id')
+        
+        # Alert filters
+        alert_levels = request.args.getlist('alert_level')
+        event_types = request.args.getlist('event_type')
+        
+        # Sorting
+        sort_by = request.args.get('sort_by', 'timestamp')
+        sort_order = request.args.get('sort_order', 'desc')
+        
+        # Build SQL query with filters
+        query_parts = ["SELECT * FROM events WHERE 1=1"]
+        params = []
+        
+        # Time filters
+        if start_date:
+            try:
+                start_ts = int(time.mktime(time.strptime(start_date, '%Y-%m-%dT%H:%M:%S'))) * 1000
+                query_parts.append("AND ts >= ?")
+                params.append(start_ts)
+            except:
+                pass
+                
+        if end_date:
+            try:
+                end_ts = int(time.mktime(time.strptime(end_date, '%Y-%m-%dT%H:%M:%S'))) * 1000
+                query_parts.append("AND ts <= ?")
+                params.append(end_ts)
+            except:
+                pass
+                
+        if last_hours:
+            try:
+                hours_ago_ts = int((time.time() - int(last_hours) * 3600) * 1000)
+                query_parts.append("AND ts >= ?")
+                params.append(hours_ago_ts)
+            except:
+                pass
+        
+        # Recognition filters
+        if matched_only:
+            query_parts.append("AND matched = 1")
+            
+        query_parts.append("AND confidence >= ? AND confidence <= ?")
+        params.extend([confidence_min, confidence_max])
+        
+        if person_name:
+            query_parts.append("AND person_name LIKE ?")
+            params.append(f"%{person_name}%")
+        
+        # Quality filters
+        query_parts.append("AND quality_score >= ?")
+        params.append(min_quality)
+        
+        if exclude_low_quality:
+            query_parts.append("AND is_low_quality = 0")
+            
+        if min_face_size > 0:
+            query_parts.append("AND face_size >= ?")
+            params.append(min_face_size)
+        
+        # Feature filters
+        if age_min:
+            query_parts.append("AND age_estimate >= ?")
+            params.append(int(age_min))
+            
+        if age_max:
+            query_parts.append("AND age_estimate <= ?")
+            params.append(int(age_max))
+            
+        if gender:
+            query_parts.append("AND gender = ?")
+            params.append(gender)
+        
+        # Location filters
+        if camera_ids:
+            placeholders = ','.join(['?' for _ in camera_ids])
+            query_parts.append(f"AND camera_id IN ({placeholders})")
+            params.extend(camera_ids)
+        
+        # Alert filters
+        if alert_levels:
+            placeholders = ','.join(['?' for _ in alert_levels])
+            query_parts.append(f"AND alert_level IN ({placeholders})")
+            params.extend(alert_levels)
+            
+        if event_types:
+            placeholders = ','.join(['?' for _ in event_types])
+            query_parts.append(f"AND event_type IN ({placeholders})")
+            params.extend(event_types)
+        
+        # Add sorting and pagination
+        sort_column = 'ts' if sort_by == 'timestamp' else sort_by
+        sort_direction = 'DESC' if sort_order == 'desc' else 'ASC'
+        query_parts.append(f"ORDER BY {sort_column} {sort_direction}")
+        query_parts.append("LIMIT ? OFFSET ?")
+        params.extend([limit, offset])
+        
+        # Execute query
+        query = ' '.join(query_parts)
+        
+        with dbm.DB_LOCK:
+            rows = DB_CONN.execute(query, params).fetchall()
+        
+        # Get total count for pagination
+        count_query = query.replace("SELECT *", "SELECT COUNT(*)").split("ORDER BY")[0]
+        with dbm.DB_LOCK:
+            total_count = DB_CONN.execute(count_query, params[:-2]).fetchone()[0]
+        
+        # Convert to enhanced event format
+        enhanced_events = []
+        for row in rows:
+            event = dict(row)
+            
+            # Parse JSON fields safely
+            try:
+                event['emotions'] = json.loads(event.get('emotions') or '{}')
+            except:
+                event['emotions'] = {}
+                
+            try:
+                event['bbox_parsed'] = json.loads(event.get('bbox') or '[]')
+            except:
+                event['bbox_parsed'] = []
+            
+            # Add computed fields
+            event['created_date'] = time.strftime('%Y-%m-%dT%H:%M:%S', time.localtime(event['ts'] / 1000))
+            event['thumbnail'] = f"/data/{event['thumb_relpath']}" if event.get('thumb_relpath') else None
+            event['full_frame'] = f"/uploads/{os.path.basename(event['full_image_path'])}" if event.get('full_image_path') else None
+            
+            # Face detection features in OPTIEXACTA format
+            event['features'] = {
+                'age': {
+                    'name': event.get('age_estimate'),
+                    'confidence': event.get('age_confidence', 0.0)
+                },
+                'gender': {
+                    'name': event.get('gender'),
+                    'confidence': event.get('gender_confidence', 0.0)
+                },
+                'glasses': {
+                    'name': 'eyeglasses' if event.get('has_glasses') else 'none',
+                    'confidence': event.get('glasses_confidence', 0.0)
+                },
+                'beard': {
+                    'name': 'beard' if event.get('has_beard') else 'no_beard',
+                    'confidence': event.get('beard_confidence', 0.0)
+                },
+                'liveness': {
+                    'name': 'real',
+                    'confidence': event.get('liveness_score', 0.9)
+                },
+                'emotions': event['emotions']
+            }
+            
+            # Quality metrics
+            event['quality_metrics'] = {
+                'width': event.get('face_width', 0),
+                'height': event.get('face_height', 0),
+                'size': event.get('face_size', 0),
+                'quality': event.get('quality_score', 1.0),
+                'sharpness': event.get('sharpness'),
+                'brightness': event.get('brightness')
+            }
+            
+            enhanced_events.append(event)
+        
+        # Prepare response
+        response = {
+            'events': enhanced_events,
+            'pagination': {
+                'total_count': total_count,
+                'page': page,
+                'limit': limit,
+                'has_next': (offset + limit) < total_count,
+                'has_previous': page > 1,
+                'total_pages': (total_count + limit - 1) // limit
+            },
+            'filters_applied': {
+                'matched_only': matched_only,
+                'confidence_range': [confidence_min, confidence_max],
+                'min_quality': min_quality,
+                'exclude_low_quality': exclude_low_quality,
+                'camera_ids': camera_ids,
+                'alert_levels': alert_levels,
+                'event_types': event_types,
+                'person_name': person_name,
+                'age_range': [age_min, age_max] if age_min or age_max else None,
+                'gender': gender
+            },
+            'processing_time_ms': round((time.time() - time.time()) * 1000, 2)  # Placeholder
+        }
+        
+        return jsonify(response)
+        
+    except Exception as e:
+        print(f"Error in enhanced events API: {e}")
+        return jsonify({'error': str(e)}), 500
 
 
 @app.route('/api/events/high-quality', methods=['GET'])

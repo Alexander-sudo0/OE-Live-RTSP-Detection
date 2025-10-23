@@ -384,27 +384,86 @@ function CameraCard({
         </p>
         {lastError && <p className="text-xs text-red-500">{lastError}</p>}
         {events.length > 0 && (
-          <div className="grid grid-cols-3 gap-2">
-            {events.map((e, i) => (
-              <div key={i} className="relative group">
-                <img
-                  src={`${MIZVA_URL}/data/${e.thumb_relpath}`}
-                  className="h-24 w-full object-cover rounded-md border shadow-sm hover:shadow-md transition-all duration-200 cursor-pointer"
-                  alt={`Detection ${i + 1}`}
-                  loading="lazy"
-                  style={{ imageRendering: "crisp-edges" }}
-                  onClick={() =>
-                    window.open(
-                      `${MIZVA_URL}/data/${e.thumb_relpath}`,
-                      "_blank"
-                    )
-                  }
-                />
-                {e.is_match && (
-                  <div className="absolute top-1 right-1 h-3 w-3 bg-red-500 rounded-full border border-white shadow-sm"></div>
-                )}
-              </div>
-            ))}
+          <div className="space-y-3">
+            <div className="text-xs font-medium text-muted-foreground">
+              Recent Detections ({events.length})
+            </div>
+            <div className="grid grid-cols-2 gap-2">
+              {events.map((e, i) => (
+                <div key={i} className="relative group bg-card border rounded-lg overflow-hidden hover:shadow-md transition-all duration-200">
+                  <div className="relative">
+                    <img
+                      src={`${MIZVA_URL}/data/${e.thumb_relpath}`}
+                      className="w-full h-20 object-cover cursor-pointer"
+                      alt={`Detection ${i + 1}`}
+                      loading="lazy"
+                      style={{ imageRendering: "crisp-edges" }}
+                      onClick={() =>
+                        window.open(
+                          `${MIZVA_URL}/data/${e.thumb_relpath}`,
+                          "_blank"
+                        )
+                      }
+                    />
+                    {e.matched && (
+                      <div className="absolute top-1 right-1 h-2 w-2 bg-green-500 rounded-full border border-white shadow-sm"></div>
+                    )}
+                    {e.alert_level === 'high' && (
+                      <div className="absolute top-1 left-1 h-2 w-2 bg-red-500 rounded-full border border-white shadow-sm animate-pulse"></div>
+                    )}
+                  </div>
+                  
+                  <div className="p-2 space-y-1">
+                    {/* Person identification */}
+                    <div className="text-xs font-medium truncate">
+                      {e.person_name || "Unknown Person"}
+                    </div>
+                    
+                    {/* Enhanced metadata display */}
+                    <div className="flex items-center justify-between text-xs text-muted-foreground">
+                      <span className="flex items-center gap-1">
+                        <span className={`h-1 w-1 rounded-full ${
+                          e.quality_score >= 0.7 ? 'bg-green-500' : 
+                          e.quality_score >= 0.4 ? 'bg-yellow-500' : 'bg-red-500'
+                        }`}></span>
+                        {Math.round(e.confidence * 100)}%
+                      </span>
+                      {e.face_width && e.face_height && (
+                        <span>{e.face_width}×{e.face_height}</span>
+                      )}
+                    </div>
+                    
+                    {/* Facial features */}
+                    {(e.age_estimate || e.gender) && (
+                      <div className="text-xs text-muted-foreground flex items-center gap-2">
+                        {e.age_estimate && (
+                          <span>{e.age_estimate}y</span>
+                        )}
+                        {e.gender && (
+                          <span className="capitalize">{e.gender}</span>
+                        )}
+                        {e.quality_score && (
+                          <span className={`px-1 py-0.5 rounded text-xs ${
+                            e.quality_score >= 0.7 ? 'bg-green-100 text-green-700' :
+                            e.quality_score >= 0.4 ? 'bg-yellow-100 text-yellow-700' :
+                            'bg-red-100 text-red-700'
+                          }`}>
+                            Q{Math.round(e.quality_score * 100)}
+                          </span>
+                        )}
+                      </div>
+                    )}
+                    
+                    {/* Processing info */}
+                    {e.processing_time_ms && (
+                      <div className="text-xs text-muted-foreground">
+                        {e.processing_time_ms.toFixed(1)}ms
+                      </div>
+                    )}
+                  </div>
+                </div>
+              ))}
+            </div>
           </div>
         )}
       </CardContent>

@@ -128,5 +128,28 @@ Thumbs.db
 # *.sqlite
 # *.sqlite3
 
+# Database files - exclude for public repo
+*.db
+*.sqlite
+*.sqlite3
+
+# Thumbnails and image cache
+**/thumbnails/
+**/thumbs/
+Thumbs.db
+ehthumbs.db
+
+# Virtual environments
+.venv/
+.venv_gpu/
+venv/
+env/
+
+# Temporary scripts and test files
+check_db.py
+update_fps.py
+monitor_gpu.ps1
+monitor_gpu_realtime.ps1
+
 # Bun
 .bun

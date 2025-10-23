@@ -88,6 +88,62 @@ def init_db(conn: sqlite3.Connection) -> None:
               quality_score REAL DEFAULT 1.0,
               is_low_quality INTEGER DEFAULT 0,
               full_image_path TEXT,
+              
+              -- Enhanced metadata fields
+              episode_id INTEGER,
+              track_id TEXT,
+              frame_number INTEGER,
+              
+              -- Face coordinates  
+              face_left INTEGER,
+              face_top INTEGER,
+              face_right INTEGER,
+              face_bottom INTEGER,
+              
+              -- Quality metrics
+              face_width INTEGER,
+              face_height INTEGER,
+              face_size INTEGER,
+              sharpness REAL,
+              brightness REAL,
+              
+              -- Facial features (JSON stored as TEXT)
+              age_estimate INTEGER,
+              age_confidence REAL,
+              gender TEXT, -- 'male', 'female'
+              gender_confidence REAL,
+              has_glasses INTEGER DEFAULT 0,
+              glasses_confidence REAL,
+              has_beard INTEGER DEFAULT 0,
+              beard_confidence REAL,
+              liveness_score REAL,
+              emotions TEXT, -- JSON: {"happiness": 0.8, "surprise": 0.2}
+              
+              -- Recognition details
+              similarity_score REAL,
+              recognition_threshold REAL,
+              detection_threshold REAL,
+              
+              -- Tracking info
+              track_duration REAL,
+              track_confidence REAL,
+              is_new_track INTEGER DEFAULT 0,
+              
+              -- Event classification
+              event_type TEXT, -- 'entry', 'exit', 'recognized', etc.
+              alert_level TEXT, -- 'low', 'medium', 'high', 'critical' 
+              is_blacklisted INTEGER DEFAULT 0,
+              is_whitelisted INTEGER DEFAULT 0,
+              
+              -- Processing metadata
+              processing_time_ms REAL,
+              frame_fps REAL,
+              model_version TEXT,
+              
+              -- External references
+              external_ref_id TEXT,
+              sync_status TEXT DEFAULT 'pending',
+              
               FOREIGN KEY(camera_id) REFERENCES cameras(id)
             )
             """
@@ -98,6 +154,58 @@ def init_db(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE events ADD COLUMN quality_score REAL DEFAULT 1.0")
         except sqlite3.OperationalError:
             pass  # Column already exists
+            
+        try:
+            conn.execute("ALTER TABLE events ADD COLUMN is_low_quality INTEGER DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+            
+        # Migrate enhanced metadata fields
+        new_columns = [
+            ("episode_id", "INTEGER"),
+            ("track_id", "TEXT"),
+            ("frame_number", "INTEGER"),
+            ("face_left", "INTEGER"),
+            ("face_top", "INTEGER"), 
+            ("face_right", "INTEGER"),
+            ("face_bottom", "INTEGER"),
+            ("face_width", "INTEGER"),
+            ("face_height", "INTEGER"),
+            ("face_size", "INTEGER"),
+            ("sharpness", "REAL"),
+            ("brightness", "REAL"),
+            ("age_estimate", "INTEGER"),
+            ("age_confidence", "REAL"),
+            ("gender", "TEXT"),
+            ("gender_confidence", "REAL"),
+            ("has_glasses", "INTEGER DEFAULT 0"),
+            ("glasses_confidence", "REAL"),
+            ("has_beard", "INTEGER DEFAULT 0"),
+            ("beard_confidence", "REAL"),
+            ("liveness_score", "REAL"),
+            ("emotions", "TEXT"),
+            ("similarity_score", "REAL"),
+            ("recognition_threshold", "REAL"),
+            ("detection_threshold", "REAL"),
+            ("track_duration", "REAL"),
+            ("track_confidence", "REAL"),
+            ("is_new_track", "INTEGER DEFAULT 0"),
+            ("event_type", "TEXT"),
+            ("alert_level", "TEXT"),
+            ("is_blacklisted", "INTEGER DEFAULT 0"),
+            ("is_whitelisted", "INTEGER DEFAULT 0"),
+            ("processing_time_ms", "REAL"),
+            ("frame_fps", "REAL"),
+            ("model_version", "TEXT"),
+            ("external_ref_id", "TEXT"),
+            ("sync_status", "TEXT DEFAULT 'pending'")
+        ]
+        
+        for col_name, col_type in new_columns:
+            try:
+                conn.execute(f"ALTER TABLE events ADD COLUMN {col_name} {col_type}")
+            except sqlite3.OperationalError:
+                pass  # Column already exists
         
         try:
             conn.execute("ALTER TABLE events ADD COLUMN is_low_quality INTEGER DEFAULT 0")
@@ -238,13 +346,95 @@ def remove_camera(conn: sqlite3.Connection, cam_id: str) -> None:
 
 
 def insert_event(conn: sqlite3.Connection, ev: Dict[str, Any]) -> int:
+    """
+    Insert enhanced face detection event with comprehensive metadata.
+    
+    Expected event structure (all optional except camera_id, ts, confidence, bbox):
+    {
+        'camera_id': str,
+        'ts': int (timestamp),
+        'confidence': float,
+        'bbox': [x1, y1, x2, y2],
+        'thumb_relpath': str,
+        'matched': bool,
+        'person_id': int,
+        'person_name': str,
+        
+        # Enhanced metadata
+        'episode_id': int,
+        'track_id': str,
+        'frame_number': int,
+        'face_coordinates': {'left': int, 'top': int, 'right': int, 'bottom': int},
+        'face_metrics': {'width': int, 'height': int, 'size': int, 'sharpness': float, 'brightness': float},
+        'facial_features': {
+            'age': {'estimate': int, 'confidence': float},
+            'gender': {'name': str, 'confidence': float},
+            'glasses': {'has_glasses': bool, 'confidence': float},
+            'beard': {'has_beard': bool, 'confidence': float},
+            'liveness': float,
+            'emotions': dict
+        },
+        'recognition_details': {
+            'similarity_score': float,
+            'recognition_threshold': float, 
+            'detection_threshold': float
+        },
+        'tracking': {
+            'duration': float,
+            'confidence': float,
+            'is_new_track': bool
+        },
+        'classification': {
+            'event_type': str,
+            'alert_level': str,
+            'is_blacklisted': bool,
+            'is_whitelisted': bool
+        },
+        'processing': {
+            'time_ms': float,
+            'fps': float,
+            'model_version': str
+        }
+    }
+    """
     with DB_LOCK, conn:
+        # Extract nested metadata with safe defaults
+        face_coords = ev.get("face_coordinates", {})
+        face_metrics = ev.get("face_metrics", {})
+        facial_features = ev.get("facial_features", {})
+        age_info = facial_features.get("age", {})
+        gender_info = facial_features.get("gender", {})
+        glasses_info = facial_features.get("glasses", {})
+        beard_info = facial_features.get("beard", {})
+        recognition = ev.get("recognition_details", {})
+        tracking = ev.get("tracking", {})
+        classification = ev.get("classification", {})
+        processing = ev.get("processing", {})
+        
+        # Serialize complex fields as JSON
+        emotions_json = json.dumps(facial_features.get("emotions", {}))
+        extra_json = json.dumps(ev.get("extra", {}))
+        
         cur = conn.execute(
             """
-            INSERT INTO events(camera_id, ts, confidence, bbox, thumb_relpath, matched, person_id, person_name, extra, quality_score, is_low_quality, full_image_path)
-            VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            INSERT INTO events(
+                camera_id, ts, confidence, bbox, thumb_relpath, matched, person_id, person_name, extra, 
+                quality_score, is_low_quality, full_image_path,
+                episode_id, track_id, frame_number,
+                face_left, face_top, face_right, face_bottom,
+                face_width, face_height, face_size, sharpness, brightness,
+                age_estimate, age_confidence, gender, gender_confidence,
+                has_glasses, glasses_confidence, has_beard, beard_confidence, liveness_score, emotions,
+                similarity_score, recognition_threshold, detection_threshold,
+                track_duration, track_confidence, is_new_track,
+                event_type, alert_level, is_blacklisted, is_whitelisted,
+                processing_time_ms, frame_fps, model_version,
+                external_ref_id, sync_status
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             """,
             (
+                # Core event data
                 ev["camera_id"], 
                 int(ev["ts"]), 
                 float(ev["confidence"]), 
@@ -253,10 +443,65 @@ def insert_event(conn: sqlite3.Connection, ev: Dict[str, Any]) -> int:
                 int(bool(ev.get("matched", False))), 
                 ev.get("person_id"), 
                 ev.get("person_name"), 
-                json.dumps(ev.get("extra") or {}),
+                extra_json,
                 float(ev.get("quality_score", 1.0)),
                 int(bool(ev.get("is_low_quality", False))),
-                ev.get("full_image_path")
+                ev.get("full_image_path"),
+                
+                # Enhanced metadata
+                ev.get("episode_id"),
+                ev.get("track_id"),
+                ev.get("frame_number"),
+                
+                # Face coordinates
+                face_coords.get("left"),
+                face_coords.get("top"), 
+                face_coords.get("right"),
+                face_coords.get("bottom"),
+                
+                # Face metrics
+                face_metrics.get("width"),
+                face_metrics.get("height"),
+                face_metrics.get("size"),
+                face_metrics.get("sharpness"),
+                face_metrics.get("brightness"),
+                
+                # Facial features
+                age_info.get("estimate"),
+                age_info.get("confidence"),
+                gender_info.get("name"),
+                gender_info.get("confidence"),
+                int(bool(glasses_info.get("has_glasses", False))),
+                glasses_info.get("confidence"),
+                int(bool(beard_info.get("has_beard", False))),
+                beard_info.get("confidence"),
+                facial_features.get("liveness"),
+                emotions_json,
+                
+                # Recognition details
+                recognition.get("similarity_score"),
+                recognition.get("recognition_threshold"),
+                recognition.get("detection_threshold"),
+                
+                # Tracking info
+                tracking.get("duration"),
+                tracking.get("confidence"),
+                int(bool(tracking.get("is_new_track", False))),
+                
+                # Classification
+                classification.get("event_type"),
+                classification.get("alert_level"),
+                int(bool(classification.get("is_blacklisted", False))),
+                int(bool(classification.get("is_whitelisted", False))),
+                
+                # Processing metadata
+                processing.get("time_ms"),
+                processing.get("fps"),
+                processing.get("model_version"),
+                
+                # External integration
+                ev.get("external_ref_id"),
+                ev.get("sync_status", "pending")
             ),
         )
         lid = cur.lastrowid
